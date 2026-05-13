@@ -19,6 +19,7 @@
     "setup": "node scripts/setup.cjs",
     "check-env": "node scripts/check-env.cjs",
     "gen:secret": "node scripts/gen-jwt-secret.cjs",
+    "vad:download": "node scripts/download-vad-model.cjs",
     "prepare": "husky"
   },
   "devDependencies": {

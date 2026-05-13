@@ -8,11 +8,9 @@
  *
  * Scheduling strategy:
  *   - nextScheduledTime advances by buffer.duration after each frame
- *   - If the gap between last scheduled end and now exceeds STALL_THRESHOLD_S,
- *     nextScheduledTime is reset to currentTime to avoid playing into the past
+ *   - If nextScheduledTime falls behind currentTime (stall, first frame, cleared),
+ *     it is reset to currentTime to avoid scheduling into the past
  */
-
-const STALL_THRESHOLD_S = 0.5;
 
 export class AudioPlaybackQueue {
   private nextScheduledTime = 0;
@@ -37,12 +35,7 @@ export class AudioPlaybackQueue {
 
     const now = this.ctx.currentTime;
 
-    // Stall detection: if scheduled time is too far in the past, reset to now.
-    if (this.nextScheduledTime < now - STALL_THRESHOLD_S) {
-      this.nextScheduledTime = now;
-    }
-
-    // Also reset if this is the very first frame or queue was cleared.
+    // Reset if behind currentTime (stall, first frame, or cleared queue).
     if (this.nextScheduledTime < now) {
       this.nextScheduledTime = now;
     }

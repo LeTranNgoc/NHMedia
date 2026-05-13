@@ -45,6 +45,33 @@ vi.stubGlobal('chrome', { storage: mockStorage });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+describe('loadSettings — scoped key reads', () => {
+  beforeEach(() => {
+    storedData = {};
+    vi.mocked(mockStorage.sync.get).mockClear();
+  });
+
+  it('reads only known settings keys, not the entire sync namespace', async () => {
+    // Pre-populate storage with a settings key plus an unrelated key
+    storedData = { duckingPercent: 55, unrelatedExtensionKey: 'some-value' };
+    mockStorage.sync.get.mockImplementationOnce(async (keys: string | string[] | null) => {
+      if (Array.isArray(keys)) {
+        return Object.fromEntries(keys.map((k) => [k, storedData[k]]).filter(([, v]) => v !== undefined));
+      }
+      return { ...storedData };
+    });
+
+    const settings = await (await import('./settings-store')).loadSettings();
+
+    // Settings are loaded correctly
+    expect(settings.duckingPercent).toBe(55);
+    // get() was called with an array of keys (not null)
+    const callArg = vi.mocked(mockStorage.sync.get).mock.calls[0][0];
+    expect(Array.isArray(callArg)).toBe(true);
+    expect(callArg).not.toBeNull();
+  });
+});
+
 describe('getDefaultSettings', () => {
   it('returns valid default settings matching the schema', () => {
     const defaults = getDefaultSettings();

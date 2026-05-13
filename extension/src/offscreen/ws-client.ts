@@ -32,6 +32,7 @@ export interface WsClientOptions {
 export class WsClient {
   private ws: WebSocket | null = null;
   private stopped = false;
+  private intentionalClose = false;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -50,6 +51,7 @@ export class WsClient {
   connect(): void {
     if (this.ws) return;
     this.stopped = false;
+    this.intentionalClose = false;
     this.openSocket();
   }
 
@@ -73,6 +75,7 @@ export class WsClient {
   /** Graceful shutdown — no reconnect. */
   close(): void {
     this.stopped = true;
+    this.intentionalClose = true;
     this.clearReconnectTimer();
     if (this.ws) {
       this.ws.close(1000, 'client stop');
@@ -113,8 +116,13 @@ export class WsClient {
       this.ws = null;
       if (this.stopped) return;
 
+      // 1000 from *client* (intentionalClose flag set by close()) → silent stop.
+      // 1000 from *server* mid-session → treat as unexpected; trigger reconnect.
+      if (ev.code === 1000 && this.intentionalClose) {
+        return; // client-initiated clean close — no callback needed
+      }
+
       const isFatal =
-        ev.code === 1000 || // normal closure
         ev.code === 4001 || // auth fail
         ev.code === 4003 || // quota exceeded
         (ev.code >= 4000 && ev.code <= 4999); // all 4xxx treated as fatal
@@ -124,13 +132,12 @@ export class WsClient {
           ? 'auth_failed'
           : ev.code === 4003
             ? 'quota_exceeded'
-            : ev.code === 1000
-              ? 'closed'
-              : `fatal_close_${ev.code}`;
+            : `fatal_close_${ev.code}`;
         this.opts.onFatalError(reason);
         return;
       }
 
+      // 1000 server-initiated mid-session and all non-fatal codes → reconnect
       this.scheduleReconnect();
     });
 

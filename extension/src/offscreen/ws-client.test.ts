@@ -167,15 +167,31 @@ describe('WsClient — reconnect backoff', () => {
     expect(lastMockWs).not.toBeNull(); // new socket created
   });
 
-  it('does NOT reconnect after clean close (1000)', () => {
+  it('server 1000 mid-session triggers reconnect (not fatal)', () => {
     const onFatalError = vi.fn();
-    const client = makeClient({ onFatalError });
+    const onReconnecting = vi.fn();
+    const client = makeClient({ onFatalError, onReconnecting });
     client.connect();
 
-    lastMockWs!._emit('close', { code: 1000, reason: 'ok', wasClean: true });
+    // Server sends 1000 without client calling close() → intentionalClose=false
+    lastMockWs!._emit('close', { code: 1000, reason: 'server restart', wasClean: true });
+    vi.advanceTimersByTime(7_000);
+
+    expect(onFatalError).not.toHaveBeenCalled();
+    expect(onReconnecting).toHaveBeenCalledWith(0);
+  });
+
+  it('client close() then 1000 is silent — no fatal error, no reconnect', () => {
+    const onFatalError = vi.fn();
+    const onReconnecting = vi.fn();
+    const client = makeClient({ onFatalError, onReconnecting });
+    client.connect();
+
+    client.close(); // sets intentionalClose=true
     vi.advanceTimersByTime(60_000);
 
-    expect(onFatalError).toHaveBeenCalledWith('closed');
+    expect(onFatalError).not.toHaveBeenCalled();
+    expect(onReconnecting).not.toHaveBeenCalled();
   });
 
   it('does NOT reconnect on auth fail 4001', () => {

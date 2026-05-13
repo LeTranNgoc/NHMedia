@@ -223,14 +223,22 @@ export class AudioPipelineController {
 
     if (this.playbackCtx) {
       await this.playbackCtx.close().catch((e) =>
-        console.error('[pipeline] playbackCtx close error:', e),
+        chrome.runtime.sendMessage({
+          type: 'sw.telemetry.error',
+          context: 'playbackCtx.close',
+          error: String(e),
+        }).catch(() => {}),
       );
       this.playbackCtx = null;
     }
 
     if (this.capture) {
       await this.capture.stop().catch((e) =>
-        console.error('[pipeline] capture stop error:', e),
+        chrome.runtime.sendMessage({
+          type: 'sw.telemetry.error',
+          context: 'capture.stop',
+          error: String(e),
+        }).catch(() => {}),
       );
       this.capture = null;
     }

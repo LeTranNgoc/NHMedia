@@ -6,7 +6,7 @@ import { useSettings } from '../../shared/settings-store';
 import type { StatusResponse, PipelineStatusMsg } from '../../shared/messaging-types';
 
 export function MainView() {
-  const { settings, updateSettings } = useSettings();
+  const { updateSettings } = useSettings();
   const [status, setStatus] = useState<PipelineStatus>('idle');
   const [detectedLang, setDetectedLang] = useState<string | undefined>();
   const [errorMessage, setErrorMessage] = useState<string | undefined>();

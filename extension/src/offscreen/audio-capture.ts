@@ -35,24 +35,24 @@ export class AudioCapture {
       return;
     }
 
+    // Load the worklet FIRST — if it fails, we haven't acquired the stream yet
+    // and the tab-capture indicator won't show unnecessarily.
+    this.ctx = new AudioContext({ sampleRate: AUDIO_CONFIG.INPUT_SAMPLE_RATE });
+    await this.ctx.audioWorklet.addModule('worklet/downsample-processor.js');
+
     // Chrome-specific constraint for tab audio capture.
     const constraints: MediaStreamConstraints = {
       audio: {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mandatory: {
           chromeMediaSource: 'tab',
           chromeMediaSourceId: streamId,
         },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any, // Chrome-specific 'mandatory' key not in standard TS types
       video: false,
     };
 
     this.stream = await navigator.mediaDevices.getUserMedia(constraints);
-
-    this.ctx = new AudioContext({ sampleRate: AUDIO_CONFIG.INPUT_SAMPLE_RATE });
-
-    // Load the downsampling worklet from the extension public directory.
-    await this.ctx.audioWorklet.addModule('worklet/downsample-processor.js');
 
     this.source = this.ctx.createMediaStreamSource(this.stream);
 

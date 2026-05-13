@@ -11,13 +11,17 @@ import { useState, useEffect, useCallback } from 'react';
 import { settingsSchema } from './settings-schema';
 import type { Settings } from './settings-schema';
 
+/** Keys this module owns in chrome.storage.sync. Only these are read/written. */
+const SETTINGS_KEYS = Object.keys(settingsSchema.shape) as (keyof Settings)[];
+
 export function getDefaultSettings(): Settings {
   return settingsSchema.parse({});
 }
 
 /** Read settings from chrome.storage.sync, falling back to schema defaults. */
 export async function loadSettings(): Promise<Settings> {
-  const raw = await chrome.storage.sync.get(null);
+  // Read only known settings keys — avoids pulling in unrelated extension storage entries.
+  const raw = await chrome.storage.sync.get(SETTINGS_KEYS as string[]);
   // parse() fills in any missing keys with defaults
   return settingsSchema.parse(raw ?? {});
 }

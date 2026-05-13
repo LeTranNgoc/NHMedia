@@ -11,5 +11,21 @@ export default defineConfig({
     setupFiles: ['src/test-setup.ts'],
     // SharedArrayBuffer requires cross-origin isolation headers.
     // In happy-dom test environment we polyfill SAB via a simple fallback buffer.
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html'],
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      exclude: [
+        'src/**/*.test.ts',
+        'src/**/*.test.tsx',
+        'src/shared/messaging-types.ts',
+      ],
+      thresholds: {
+        statements: 25,
+        branches: 70,
+        functions: 60,
+        lines: 25,
+      },
+    },
   },
 });

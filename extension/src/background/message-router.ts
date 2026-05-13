@@ -202,6 +202,13 @@ export class MessageRouter {
         return false;
       }
 
+      case 'sw.telemetry.error': {
+        // Structured error relay from offscreen (e.g. AudioContext.close failures).
+        // Future: wire to a telemetry endpoint. For now, log with context.
+        console.warn('[sw.telemetry]', msg.context, msg.error);
+        return false;
+      }
+
       case 'content.video.event': {
         // Forward video events to offscreen for timeline/pipeline control.
         const videoMsg: SwVideoEventMsg = {

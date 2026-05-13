@@ -88,13 +88,21 @@ export interface PipelineStatusMsg {
   errorMessage?: string;
 }
 
+/** Telemetry error from offscreen — AudioContext.close and other swallowed errors. */
+export interface OffscreenTelemetryErrorMsg {
+  type: 'sw.telemetry.error';
+  context: string;
+  error: string;
+}
+
 export type OffscreenToSwMsg =
   | OffscreenPingMsg
   | OffscreenPipelineFrameMsg
   | OffscreenPipelineErrorMsg
   | PipelineTranscriptMsg
   | PipelineTranslationMsg
-  | PipelineStatusMsg;
+  | PipelineStatusMsg
+  | OffscreenTelemetryErrorMsg;
 
 // ── Content Script → SW ───────────────────────────────────────────────────────
 
