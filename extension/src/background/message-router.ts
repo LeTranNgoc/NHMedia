@@ -8,10 +8,11 @@ import type { OffscreenManager } from './offscreen-manager';
 import { TabCaptureHandler } from './tab-capture-handler';
 import { loadSettings, updateSettings } from '../shared/settings-store';
 
-// Env vars injected at build time by WXT. Defaults keep local dev working.
+// Env vars injected at build time by WXT. Defaults keep local dev working —
+// matches backend .env.example PORT=3000.
 const WS_URL: string =
   (typeof import.meta.env !== 'undefined' && (import.meta.env['WXT_WS_URL'] as string | undefined)) ||
-  'ws://localhost:3001/ws';
+  'ws://localhost:3000/ws/translate';
 
 /**
  * Routes all inbound runtime messages in the Service Worker.

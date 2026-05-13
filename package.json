@@ -16,6 +16,9 @@
     "test": "pnpm -r test",
     "dev:backend": "pnpm -F backend dev",
     "dev:extension": "pnpm -F extension dev",
+    "setup": "node scripts/setup.cjs",
+    "check-env": "node scripts/check-env.cjs",
+    "gen:secret": "node scripts/gen-jwt-secret.cjs",
     "prepare": "husky"
   },
   "devDependencies": {
