@@ -1,0 +1,92 @@
+/**
+ * AudioPlaybackQueue — decode MP3 base64 frames and schedule playback in order.
+ *
+ * Each enqueued frame is:
+ *   1. Base64-decoded → ArrayBuffer
+ *   2. Decoded via AudioContext.decodeAudioData → AudioBuffer
+ *   3. Scheduled via AudioBufferSourceNode.start(nextScheduledTime)
+ *
+ * Scheduling strategy:
+ *   - nextScheduledTime advances by buffer.duration after each frame
+ *   - If the gap between last scheduled end and now exceeds STALL_THRESHOLD_S,
+ *     nextScheduledTime is reset to currentTime to avoid playing into the past
+ */
+
+const STALL_THRESHOLD_S = 0.5;
+
+export class AudioPlaybackQueue {
+  private nextScheduledTime = 0;
+  private lastEnqueueTime = 0;
+  private activeSources: AudioBufferSourceNode[] = [];
+
+  constructor(private readonly ctx: AudioContext) {}
+
+  /**
+   * Enqueue a base64-encoded MP3 frame for playback.
+   * Decode errors are logged and skipped — playback continues with subsequent frames.
+   */
+  async enqueue(base64: string): Promise<void> {
+    let buffer: AudioBuffer;
+    try {
+      const arrayBuffer = this.base64ToArrayBuffer(base64);
+      buffer = await this.ctx.decodeAudioData(arrayBuffer);
+    } catch (err) {
+      console.warn('[audio-playback-queue] decodeAudioData failed — skipping frame:', err);
+      return;
+    }
+
+    const now = this.ctx.currentTime;
+
+    // Stall detection: if scheduled time is too far in the past, reset to now.
+    if (this.nextScheduledTime < now - STALL_THRESHOLD_S) {
+      this.nextScheduledTime = now;
+    }
+
+    // Also reset if this is the very first frame or queue was cleared.
+    if (this.nextScheduledTime < now) {
+      this.nextScheduledTime = now;
+    }
+
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(this.ctx.destination);
+    source.start(this.nextScheduledTime);
+
+    this.activeSources.push(source);
+    source.onended = () => {
+      const idx = this.activeSources.indexOf(source);
+      if (idx !== -1) this.activeSources.splice(idx, 1);
+    };
+
+    this.nextScheduledTime += buffer.duration;
+    this.lastEnqueueTime = now;
+  }
+
+  /**
+   * Stop all active sources immediately and reset the schedule.
+   * Used when the user pauses/seeks the video.
+   */
+  clear(): void {
+    for (const src of this.activeSources) {
+      try { src.stop(); } catch { /* already stopped */ }
+    }
+    this.activeSources = [];
+    this.nextScheduledTime = 0;
+  }
+
+  /** Tear down — call when the offscreen document is closed. */
+  destroy(): void {
+    this.clear();
+  }
+
+  // ── Private ──────────────────────────────────────────────────────────────
+
+  private base64ToArrayBuffer(base64: string): ArrayBuffer {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
+}

@@ -1,0 +1,21 @@
+Silero VAD v4 ONNX model
+========================
+
+License : MIT
+Source  : https://github.com/snakers4/silero-vad
+Authors : Alexander Veysov et al.
+
+Download instructions
+---------------------
+The model file (silero-vad.onnx, ~5 MB) is NOT committed to this repository
+because of its binary size. Download it manually before building:
+
+  1. Visit https://github.com/snakers4/silero-vad/tree/master/files
+  2. Download silero_vad.onnx
+  3. Rename to silero-vad.onnx
+  4. Place at: extension/public/vad/silero-vad.onnx
+  5. Run: pnpm -F extension build
+
+Without this file the VAD module will automatically fall back to
+"send-all" mode (every audio chunk is treated as speech). The extension
+will still function but ASR costs will be higher.

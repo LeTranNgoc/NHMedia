@@ -1,0 +1,106 @@
+/*
+ * overlay-styles.css — Content script overlay styles for Translate Voice.
+ *
+ * Scoped to extension-owned element IDs only.
+ * Injected via WXT content script CSS import (separate document context from popup).
+ * z-index 9999 ensures visibility above YouTube UI layers.
+ * No Tailwind dependency — hand-written utilities matching design tokens.
+ */
+
+/* ── Subtitle overlay ──────────────────────────────────────────────────────── */
+
+#tv-subtitle-overlay {
+  position: fixed;
+  bottom: 4rem;          /* above YouTube controls bar (~64px) */
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+
+  max-width: 72ch;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+
+  background-color: rgba(0, 0, 0, 0.75);
+  color: #ffffff;
+  font-size: 1.125rem;   /* 18px — legible at viewing distance */
+  font-weight: 500;
+  line-height: 1.5;
+  text-align: center;
+  white-space: pre-wrap;
+  word-break: break-word;
+
+  /* Fade-in animation */
+  animation: tv-fadein 0.2s ease-in;
+
+  /* Prevent text selection interference with YouTube hotkeys */
+  user-select: none;
+  pointer-events: none;
+}
+
+#tv-subtitle-overlay[hidden] {
+  display: none;
+}
+
+@keyframes tv-fadein {
+  from { opacity: 0; transform: translateX(-50%) translateY(4px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* ── Status badge ──────────────────────────────────────────────────────────── */
+
+#tv-status-badge {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 9999;
+
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.625rem;
+  border-radius: 9999px;
+  border: none;
+
+  background-color: rgba(0, 0, 0, 0.70);
+  color: #ffffff;
+  font-size: 0.75rem;    /* 12px */
+  font-weight: 600;
+  letter-spacing: 0.025em;
+  cursor: pointer;
+
+  /* Meet 44px minimum touch target height via min dimensions */
+  min-height: 44px;
+  min-width: 44px;
+
+  transition: background-color 0.15s ease;
+  user-select: none;
+}
+
+#tv-status-badge:hover {
+  background-color: rgba(0, 0, 0, 0.90);
+}
+
+#tv-status-badge:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+/* Playing state — accent colour */
+#tv-status-badge[data-status="playing"] {
+  background-color: rgba(37, 99, 235, 0.85);
+}
+
+/* Error state */
+#tv-status-badge[data-status="error"] {
+  background-color: rgba(185, 28, 28, 0.85);
+}
+
+/* ── Legacy status overlay (Phase 05 stub, kept for compat) ───────────────── */
+
+#tv-status-overlay {
+  display: none;
+}
+
+#tv-status-overlay.tv-hidden {
+  display: none;
+}

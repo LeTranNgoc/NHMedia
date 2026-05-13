@@ -1,0 +1,42 @@
+{
+  "name": "@translate-voice/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "tsx watch src/main.ts"
+  },
+  "dependencies": {
+    "@deepgram/sdk": "^5.2.0",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^11.2.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/websocket": "^11.2.0",
+    "@google-cloud/text-to-speech": "^6.4.1",
+    "@google/generative-ai": "^0.24.1",
+    "@polar-sh/sdk": "^0.47.1",
+    "@translate-voice/shared": "workspace:*",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.8.5",
+    "google-auth-library": "^10.6.2",
+    "jose": "^6.2.3",
+    "lru-cache": "^11.3.6",
+    "mongodb": "^7.2.0",
+    "resend": "^6.12.3",
+    "ws": "^8.20.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^2.1.9",
+    "mongodb-memory-server": "^11.1.0",
+    "tsx": "^4.19.2",
+    "vitest": "^2.1.8"
+  }
+}

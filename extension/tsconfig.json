@@ -1,0 +1,10 @@
+{
+  "extends": "./.wxt/tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["chrome"],
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  }
+}

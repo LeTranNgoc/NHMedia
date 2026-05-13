@@ -1,0 +1,297 @@
+import { randomUUID } from 'node:crypto';
+import type { FastifyInstance } from 'fastify';
+import type { WebSocket } from '@fastify/websocket';
+import type { JwtService } from '../auth/jwt-service.js';
+import { verifyWsToken } from './auth-handshake.js';
+import { parseFrame } from './audio-protocol.js';
+import { SessionManager } from './session-manager.js';
+import { BackpressureMonitor } from './backpressure-monitor.js';
+import { emitLifecycleEvent } from './connection-lifecycle.js';
+import { DeepgramNova2Provider } from '../providers/asr/deepgram-nova2-provider.js';
+import { GeminiFlashProvider } from '../providers/translate/gemini-flash-provider.js';
+import { GoogleCloudTtsProvider } from '../providers/tts/google-cloud-tts-provider.js';
+import { PipelineOrchestrator } from '../pipeline/pipeline-orchestrator.js';
+import { WS_CLOSE_CODES, ALLOWED_SRC_LANGS } from '@translate-voice/shared';
+import type { ServerControlFrame } from '@translate-voice/shared';
+import type { UsageTracker } from '../lib/usage-tracker.js';
+import { checkUsageGate } from '../middleware/usage-gate-middleware.js';
+
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+// Module-level session manager — one instance shared across all connections
+const sessionManager = new SessionManager();
+
+export interface RelayServerOptions {
+  jwtService: JwtService;
+  deepgramApiKey: string;
+  geminiApiKey?: string;
+  googleCloudTtsKeyFile?: string;
+  /** UsageTracker instance — required for usage gate + mid-stream tick */
+  usageTracker?: UsageTracker;
+}
+
+export async function registerRelayServer(
+  app: FastifyInstance,
+  opts: RelayServerOptions,
+): Promise<void> {
+  const { jwtService, deepgramApiKey, geminiApiKey, googleCloudTtsKeyFile, usageTracker } = opts;
+
+  app.get(
+    '/ws/translate',
+    { websocket: true },
+    async (socket: WebSocket, request) => {
+      // ── 1. Auth — verify BEFORE accepting any messages ─────────────────────
+      const claims = await verifyWsToken(request.raw, jwtService);
+      if (claims === null) {
+        socket.close(WS_CLOSE_CODES.INVALID_JWT, 'Invalid or missing JWT');
+        return;
+      }
+
+      const { userId } = claims;
+      const sessionId = randomUUID();
+
+      // ── Usage gate — check quota, buffer messages during async check ──────────
+      // Message handler is registered immediately to avoid losing frames that arrive
+      // during the async gate check. Buffered frames are processed after gate passes
+      // or discarded if gate rejects.
+      const messageBuffer: Array<{ raw: Buffer | string; isBinary: boolean }> = [];
+      let gateResolved = false;
+
+      const bufferingMessageHandler = (raw: Buffer | string, isBinary: boolean): void => {
+        if (!gateResolved) {
+          messageBuffer.push({ raw, isBinary });
+        }
+      };
+      socket.on('message', bufferingMessageHandler);
+
+      if (usageTracker) {
+        const gate = await checkUsageGate(userId, usageTracker);
+        if (!gate.allowed) {
+          gateResolved = true;
+          socket.off('message', bufferingMessageHandler);
+          socket.close(WS_CLOSE_CODES.QUOTA_EXCEEDED, 'quota_exceeded');
+          return;
+        }
+      }
+      gateResolved = true;
+      socket.off('message', bufferingMessageHandler);
+
+      // ── Pipeline providers (instantiated per server, shared across sessions) ─
+      const translateProvider = new GeminiFlashProvider({
+        apiKey: geminiApiKey ?? '',
+      });
+      const ttsProvider = new GoogleCloudTtsProvider({
+        keyFilename: googleCloudTtsKeyFile || undefined,
+      });
+
+      // ── 2. Enforce one connection per user ──────────────────────────────────
+      sessionManager.register(userId, socket);
+
+      emitLifecycleEvent('open', { userId, sessionId });
+      app.log.info({ userId, sessionId, event: 'ws.open' }, 'WS connection opened');
+
+      // ── 3. Idle timeout ─────────────────────────────────────────────────────
+      let idleTimer = setTimeout(() => {
+        socket.close(WS_CLOSE_CODES.IDLE_TIMEOUT, 'Idle timeout');
+      }, IDLE_TIMEOUT_MS);
+
+      // ── Mid-stream usage tick — every 60s ────────────────────────────────────
+      const usageTickInterval = usageTracker
+        ? setInterval(() => {
+            usageTracker.tick(userId, 60);
+            void (async () => {
+              const tier = await usageTracker.getTier(userId);
+              const cap = usageTracker.getLimit(tier);
+              if (cap === null) return; // pro — unlimited
+              const used = await usageTracker.getToday(userId);
+              if (used >= cap) {
+                const errFrame: ServerControlFrame = {
+                  type: 'error',
+                  code: 'quota_exceeded',
+                  message: 'Daily quota exceeded',
+                };
+                if (socket.readyState === socket.OPEN) {
+                  socket.send(JSON.stringify(errFrame));
+                  socket.close(WS_CLOSE_CODES.QUOTA_EXCEEDED, 'quota_exceeded');
+                }
+              }
+            })();
+          }, 60_000)
+        : null;
+
+      function resetIdle(): void {
+        clearTimeout(idleTimer);
+        sessionManager.updateActivity(userId);
+        idleTimer = setTimeout(() => {
+          socket.close(WS_CLOSE_CODES.IDLE_TIMEOUT, 'Idle timeout');
+        }, IDLE_TIMEOUT_MS);
+      }
+
+      // ── 4. ASR provider (instantiated per session) ──────────────────────────
+      const asr = new DeepgramNova2Provider({ apiKey: deepgramApiKey });
+      sessionManager.setAsr(userId, asr);
+
+      // Pipeline orchestrator — created here, srcLang set when config frame arrives
+      let orchestrator: PipelineOrchestrator | null = null;
+
+      asr.onTranscript((t) => {
+        const frame: ServerControlFrame = {
+          type: 'transcript',
+          text: t.text,
+          isFinal: t.isFinal,
+          ts: t.ts,
+        };
+        if (socket.readyState === socket.OPEN) {
+          socket.send(JSON.stringify(frame));
+        }
+        // Feed transcript into the pipeline orchestrator
+        orchestrator?.onTranscript(t);
+        // Each transcript = one acknowledged frame for backpressure accounting
+        bp.frameAcknowledged();
+      });
+
+      asr.onError((err) => {
+        app.log.warn({ userId, sessionId, err: err.message }, 'ASR error');
+        const frame: ServerControlFrame = {
+          type: 'error',
+          code: 'asr_auth',
+          message: err.message,
+        };
+        if (socket.readyState === socket.OPEN) {
+          socket.send(JSON.stringify(frame));
+          socket.close(1011, 'ASR error');
+        }
+      });
+
+      // ── 5. Backpressure monitor ─────────────────────────────────────────────
+      const bp = new BackpressureMonitor({
+        maxFramesInFlight: 5,
+        onBackpressure: () => {
+          const frame: ServerControlFrame = {
+            type: 'warning',
+            code: 'backpressure',
+            message: 'Audio frames dropped due to backpressure',
+          };
+          if (socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify(frame));
+          }
+          app.log.warn({ userId, sessionId }, 'Backpressure: dropping audio frame');
+        },
+      });
+
+      let asrStarted = false;
+
+      // ── 6. Message handler ──────────────────────────────────────────────────
+      socket.on('message', (raw, isBinary) => {
+        resetIdle();
+
+        let parsed;
+        try {
+          parsed = parseFrame(isBinary ? (raw as Buffer) : raw.toString());
+        } catch (err) {
+          const frame: ServerControlFrame = {
+            type: 'error',
+            code: 'invalid_frame',
+            message: err instanceof Error ? err.message : 'Invalid frame',
+          };
+          socket.send(JSON.stringify(frame));
+          return;
+        }
+
+        if (parsed.kind === 'audio') {
+          if (!asrStarted) {
+            // Buffer drop: audio before config — silently discard
+            return;
+          }
+          if (bp.shouldDrop()) {
+            // Drop frame — warning already sent by onBackpressure callback
+            return;
+          }
+          bp.frameSent();
+          asr.sendAudio(parsed.pcm);
+          return;
+        }
+
+        // ── Control frame ───────────────────────────────────────────────────
+        const { frame } = parsed;
+
+        if (frame.type === 'config') {
+          const { srcLang } = frame;
+          if (!(ALLOWED_SRC_LANGS as readonly string[]).includes(srcLang)) {
+            const errFrame: ServerControlFrame = {
+              type: 'error',
+              code: 'invalid_src_lang',
+              message: `srcLang '${srcLang}' is not supported. Allowed: ${ALLOWED_SRC_LANGS.join(', ')}`,
+            };
+            socket.send(JSON.stringify(errFrame));
+            return;
+          }
+
+          asrStarted = true;
+          void asr.start({ srcLang, sampleRate: 16000 });
+
+          // Instantiate per-session pipeline orchestrator
+          orchestrator?.destroy();
+          orchestrator = new PipelineOrchestrator({
+            socket,
+            translateProvider,
+            ttsProvider,
+            srcLang,
+          });
+
+          app.log.info({ userId, sessionId, srcLang }, 'ASR session started');
+          return;
+        }
+
+        if (frame.type === 'pause') {
+          // No-op for MVP — future: pause forwarding
+          return;
+        }
+
+        if (frame.type === 'resume') {
+          // No-op for MVP — future: resume forwarding
+          return;
+        }
+
+        if (frame.type === 'flush') {
+          // Finalize current ASR segment: stop + restart
+          void asr.stop().then(async () => {
+            if (asrStarted && sessionManager.hasSession(userId)) {
+              const session = sessionManager.get(userId);
+              const currentSrcLang =
+                (session as { _lastSrcLang?: string })?._lastSrcLang ?? 'en';
+              await asr.start({ srcLang: currentSrcLang, sampleRate: 16000 });
+              bp.reset();
+            }
+          });
+          return;
+        }
+      });
+
+      // ── Drain buffered messages collected during gate check ────────────────────
+      for (const { raw, isBinary } of messageBuffer) {
+        socket.emit('message', raw, isBinary);
+      }
+      messageBuffer.length = 0;
+
+      // ── 7. Close handler ────────────────────────────────────────────────────
+      socket.on('close', () => {
+        clearTimeout(idleTimer);
+        if (usageTickInterval) clearInterval(usageTickInterval);
+        // Pass socket reference so delete only removes our entry, not a newer connection's
+        sessionManager.delete(userId, socket);
+        void asr.stop();
+        orchestrator?.destroy();
+        orchestrator = null;
+        emitLifecycleEvent('close', { userId, sessionId });
+        app.log.info({ userId, sessionId, event: 'ws.close' }, 'WS connection closed');
+      });
+
+      socket.on('error', (err) => {
+        app.log.error({ userId, sessionId, err: err.message, event: 'ws.error' }, 'WS error');
+        emitLifecycleEvent('error', { userId, sessionId });
+      });
+
+    },
+  );
+}
