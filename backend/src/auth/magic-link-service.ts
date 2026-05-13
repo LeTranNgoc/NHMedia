@@ -12,6 +12,11 @@ export interface GeneratedToken {
   hashedToken: string;
 }
 
+export interface VerifyResult {
+  user: User;
+  extensionId?: string;
+}
+
 function authError(message: string): Error {
   return Object.assign(new Error(message), { statusCode: 401 });
 }
@@ -37,19 +42,24 @@ export class MagicLinkService {
    * Throws 503 only if email service is down — caller should NOT store token
    * in that case (handled here: email is sent before insert returns cleanly,
    * but we store token first then send; on send failure we delete the token).
+   *
+   * @param extensionId - Chrome extension ID, stored to enable bridge redirect on verify
    */
-  async request(email: string): Promise<void> {
+  async request(email: string, extensionId?: string): Promise<void> {
     const { rawToken, hashedToken } = await this.generateToken();
     const now = new Date();
     const expiresAt = new Date(now.getTime() + TOKEN_TTL_MS);
 
-    await this.db.collection('magic_link_tokens').insertOne({
+    const doc: Record<string, unknown> = {
       tokenHash: hashedToken,
       email,
       expiresAt,
       used: false,
       createdAt: now,
-    });
+    };
+    if (extensionId) doc['extensionId'] = extensionId;
+
+    await this.db.collection('magic_link_tokens').insertOne(doc);
 
     try {
       await this.emailService.sendMagicLink(email, rawToken, this.baseUrl);
@@ -63,9 +73,9 @@ export class MagicLinkService {
   /**
    * Verify a raw token atomically via findOneAndUpdate.
    * Single-use: the update only matches `used: false` docs.
-   * Returns the upserted/existing user.
+   * Returns the upserted/existing user + stored extensionId (if any).
    */
-  async verify(rawToken: string): Promise<User> {
+  async verify(rawToken: string): Promise<VerifyResult> {
     // Basic format check: must be 64 hex chars
     if (!/^[0-9a-f]{64}$/.test(rawToken)) {
       throw authError('Invalid token format');
@@ -90,6 +100,7 @@ export class MagicLinkService {
     }
 
     const email = result['email'] as string;
+    const extensionId = result['extensionId'] as string | undefined;
 
     // Upsert user by email
     const upsertResult = await this.db.collection<User>('users').findOneAndUpdate(
@@ -111,6 +122,6 @@ export class MagicLinkService {
       throw authError('Failed to resolve user');
     }
 
-    return upsertResult as unknown as User;
+    return { user: upsertResult as unknown as User, extensionId };
   }
 }

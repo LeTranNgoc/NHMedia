@@ -20,9 +20,11 @@ export interface AppEnv {
   JWT_SECRET: string;
   RESEND_API_KEY: string;
   GOOGLE_CLIENT_ID: string;
+  GOOGLE_CLIENT_SECRET?: string;
   MAGIC_LINK_BASE_URL: string;
   CORS_ORIGINS: string;
   NODE_ENV: string;
+  ALLOWED_EXTENSION_IDS?: string;
   MONGO_URI?: string;
   PORT?: string | number;
   DEEPGRAM_API_KEY?: string;
@@ -100,7 +102,13 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
     overrides?.magicLinkService ??
     new MagicLinkService(db, emailService, env.MAGIC_LINK_BASE_URL);
   const googleOAuthService =
-    overrides?.googleOAuthService ?? new GoogleOAuthService(db, env.GOOGLE_CLIENT_ID);
+    overrides?.googleOAuthService ??
+    new GoogleOAuthService(
+      db,
+      env.GOOGLE_CLIENT_ID,
+      env.GOOGLE_CLIENT_SECRET ?? '',
+      `${env.MAGIC_LINK_BASE_URL}/auth/google/callback`,
+    );
   // Rate limit: 5 requests per email per hour
   const emailRateLimiter =
     overrides?.emailRateLimiter ?? new EmailRateLimiter(5, 60 * 60 * 1000);
@@ -120,12 +128,20 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
   // ── Routes ─────────────────────────────────────────────────────────────────
   await app.register(healthRoutes, { db });
 
+  const allowedExtensionIds = (env.ALLOWED_EXTENSION_IDS ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
+
   await app.register(authRoutes, {
     prefix: '/auth',
     magicLinkService,
     googleOAuthService,
     jwtService,
     emailRateLimiter,
+    baseUrl: env.MAGIC_LINK_BASE_URL,
+    allowedExtensionIds,
+    googleClientId: env.GOOGLE_CLIENT_ID,
   });
 
   // ── Billing routes ─────────────────────────────────────────────────────────

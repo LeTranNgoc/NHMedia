@@ -29,4 +29,10 @@ export class JwtService {
       email: payload['email'] as string,
     };
   }
+
+  /** Verify and return the full raw payload (for state JWTs with custom fields). */
+  async verifyRaw(token: string): Promise<JWTPayload> {
+    const { payload } = await jwtVerify(token, this.secret, { algorithms: ['HS256'] });
+    return payload;
+  }
 }

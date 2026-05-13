@@ -9,6 +9,8 @@ import type { EmailRateLimiter } from '../lib/email-rate-limiter.js';
 
 const magicLinkRequestBody = z.object({
   email: z.string().email('Invalid email address'),
+  /** Chrome extension ID — when present, verify will bridge-redirect to chromiumapp.org */
+  extensionId: z.string().optional(),
 });
 
 const googleCallbackBody = z.object({
@@ -21,6 +23,12 @@ export interface AuthRoutesOptions {
   jwtService: JwtService;
   /** Rate limiter for /magic-link/request — keyed per email, 5 req/hour */
   emailRateLimiter: EmailRateLimiter;
+  /** Base URL for the backend (e.g. http://localhost:3000) */
+  baseUrl: string;
+  /** Allowlisted Chrome extension IDs. Empty array = dev mode (allow any). */
+  allowedExtensionIds: string[];
+  /** Google OAuth client ID for building the auth URL */
+  googleClientId: string;
 }
 
 function userToDto(user: User) {
@@ -32,8 +40,68 @@ function userToDto(user: User) {
   };
 }
 
+/**
+ * Returns true if the extension ID is allowlisted.
+ * In dev mode (empty allowlist) every ID is allowed.
+ */
+function isExtensionAllowed(extensionId: string, allowedIds: string[]): boolean {
+  if (allowedIds.length === 0) return true; // dev mode — allow all
+  return allowedIds.includes(extensionId);
+}
+
+/** Build the chromiumapp.org redirect URL that chrome.identity.launchWebAuthFlow listens on. */
+function chromiumAppUrl(extensionId: string, token: string): string {
+  return `https://${extensionId}.chromiumapp.org/?token=${encodeURIComponent(token)}`;
+}
+
+/** Minimal HTML page shown when bridge mode is active. Meta-refresh + JS fallback. */
+function bridgeHtmlPage(redirectUrl: string, jwt: string): string {
+  const safeToken = jwt.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const safeRedirect = redirectUrl.replace(/"/g, '&quot;');
+  return `<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=${safeRedirect}">
+<title>Đăng nhập thành công</title>
+<style>body{font-family:sans-serif;max-width:480px;margin:40px auto;padding:0 16px}</style>
+</head>
+<body>
+<h2>Đăng nhập thành công</h2>
+<p>Đang chuyển hướng về extension...</p>
+<p id="fallback" style="display:none">
+  Nếu không tự động chuyển, sao chép token bên dưới và dán vào extension:
+</p>
+<textarea id="token" readonly rows="4" style="width:100%;display:none;font-size:11px;word-break:break-all">${safeToken}</textarea>
+<button id="copy" style="display:none;margin-top:8px;padding:8px 16px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer">
+  Sao chép token
+</button>
+<script>
+try { window.location.href = "${safeRedirect}"; } catch(e) {}
+setTimeout(function(){
+  document.getElementById('fallback').style.display='block';
+  document.getElementById('token').style.display='block';
+  document.getElementById('copy').style.display='inline-block';
+},1500);
+document.getElementById('copy').addEventListener('click',function(){
+  var t=document.getElementById('token');
+  t.select();
+  document.execCommand('copy');
+  this.textContent='Đã sao chép!';
+});
+</script>
+</body>
+</html>`;
+}
+
 export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions): Promise<void> {
-  const { magicLinkService, googleOAuthService, jwtService, emailRateLimiter } = opts;
+  const {
+    magicLinkService,
+    googleOAuthService,
+    jwtService,
+    emailRateLimiter,
+    allowedExtensionIds,
+  } = opts;
   const authGuard = buildAuthGuard(jwtService);
 
   // POST /magic-link/request — rate-limited 5/hour per email
@@ -46,7 +114,15 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
       });
     }
 
-    const { email } = parsed.data;
+    const { email, extensionId } = parsed.data;
+
+    // Validate extension ID if provided
+    if (extensionId && !isExtensionAllowed(extensionId, allowedExtensionIds)) {
+      return reply.status(403).send({
+        code: 'FORBIDDEN',
+        message: 'Extension ID not allowlisted',
+      });
+    }
 
     if (!emailRateLimiter.check(email)) {
       return reply.status(429).send({
@@ -55,11 +131,12 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
       });
     }
 
-    await magicLinkService.request(email);
+    await magicLinkService.request(email, extensionId);
     return reply.status(204).send();
   });
 
   // GET /magic-link/verify?token=...
+  // When extensionId stored with token: returns bridge HTML page instead of JSON
   app.get('/magic-link/verify', async (request, reply) => {
     const query = request.query as Record<string, string>;
     const rawToken = query['token'];
@@ -68,13 +145,20 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
       return reply.status(400).send({ code: 'VALIDATION_ERROR', message: 'token is required' });
     }
 
-    const user = await magicLinkService.verify(rawToken);
+    const { user, extensionId } = await magicLinkService.verify(rawToken);
     const jwt = await jwtService.sign({ userId: user._id.toString(), email: user.email });
+
+    if (extensionId) {
+      // Extension bridge mode: redirect to chromiumapp.org (launchWebAuthFlow listens here)
+      const redirectUrl = chromiumAppUrl(extensionId, jwt);
+      const html = bridgeHtmlPage(redirectUrl, jwt);
+      return reply.status(200).header('Content-Type', 'text/html; charset=utf-8').send(html);
+    }
 
     return reply.status(200).send({ token: jwt, user: userToDto(user) });
   });
 
-  // POST /google/callback
+  // POST /google/callback — ID token flow (existing, from in-browser chrome.identity)
   app.post('/google/callback', async (request, reply) => {
     const parsed = googleCallbackBody.safeParse(request.body);
     if (!parsed.success) {
@@ -88,6 +172,71 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
     const jwt = await jwtService.sign({ userId: user._id.toString(), email: user.email });
 
     return reply.status(200).send({ token: jwt, user: userToDto(user) });
+  });
+
+  // GET /google/extension-start?extension_id=<id>
+  // Starts the OAuth code flow for the Chrome extension via launchWebAuthFlow.
+  // Returns 302 redirect to Google's OAuth consent page.
+  app.get('/google/extension-start', async (request, reply) => {
+    const query = request.query as Record<string, string>;
+    const extensionId = query['extension_id'];
+
+    if (!extensionId) {
+      return reply.status(400).send({ code: 'VALIDATION_ERROR', message: 'extension_id is required' });
+    }
+
+    if (!isExtensionAllowed(extensionId, allowedExtensionIds)) {
+      return reply.status(403).send({ code: 'FORBIDDEN', message: 'Extension ID not allowlisted' });
+    }
+
+    // State encodes extensionId + a short-lived CSRF token (signed JWT, 5-min TTL).
+    // Not a user session JWT — userId/email stubs satisfy JwtClaims shape; cast intentional.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const statePayload = await jwtService.sign({ extensionId, userId: '', email: '' } as any, '5m');
+    const authUrl = googleOAuthService.buildAuthUrl(statePayload);
+
+    return reply.redirect(authUrl, 302);
+  });
+
+  // GET /google/callback?code=<code>&state=<state>
+  // OAuth code flow callback. Exchanges code, issues JWT, redirects to chromiumapp.org.
+  app.get('/google/callback', async (request, reply) => {
+    const query = request.query as Record<string, string>;
+    const code = query['code'];
+    const state = query['state'];
+    const error = query['error'];
+
+    if (error) {
+      return reply.status(400).send({ code: 'OAUTH_ERROR', message: error });
+    }
+
+    if (!code || !state) {
+      return reply.status(400).send({ code: 'VALIDATION_ERROR', message: 'code and state are required' });
+    }
+
+    // Verify state JWT → extract extensionId
+    let extensionId: string;
+    try {
+      const payload = await jwtService.verifyRaw(state);
+      const ext = payload['extensionId'];
+      if (typeof ext !== 'string' || !ext) {
+        throw new Error('extensionId missing from state');
+      }
+      extensionId = ext;
+    } catch {
+      return reply.status(400).send({ code: 'INVALID_STATE', message: 'Invalid or expired state parameter' });
+    }
+
+    if (!isExtensionAllowed(extensionId, allowedExtensionIds)) {
+      return reply.status(403).send({ code: 'FORBIDDEN', message: 'Extension ID not allowlisted' });
+    }
+
+    const user = await googleOAuthService.exchangeCode(code);
+    const jwt = await jwtService.sign({ userId: user._id.toString(), email: user.email });
+
+    // Redirect to the chromiumapp.org URL — chrome.identity.launchWebAuthFlow captures this
+    const redirectUrl = chromiumAppUrl(extensionId, jwt);
+    return reply.redirect(redirectUrl, 302);
   });
 
   // POST /logout — stateless JWT; exists for parity + future revocation list

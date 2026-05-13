@@ -5,7 +5,11 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   RESEND_API_KEY: z.string().min(1, 'RESEND_API_KEY is required'),
   GOOGLE_CLIENT_ID: z.string().min(1, 'GOOGLE_CLIENT_ID is required'),
+  GOOGLE_CLIENT_SECRET: z.string().optional().default(''),
   MAGIC_LINK_BASE_URL: z.string().url('MAGIC_LINK_BASE_URL must be a valid URL'),
+  /** Comma-separated Chrome extension IDs allowed to use OAuth/magic-link bridge.
+   *  Empty in dev = allow any extension (dev mode). */
+  ALLOWED_EXTENSION_IDS: z.string().optional().default(''),
   PORT: z
     .string()
     .optional()

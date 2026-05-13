@@ -8,6 +8,8 @@ export interface MagicLinkToken {
   expiresAt: Date;
   used: boolean;
   createdAt: Date;
+  /** Chrome extension ID — present when magic link was requested from the extension */
+  extensionId?: string;
 }
 
 export type MagicLinkTokenInsert = Omit<MagicLinkToken, '_id'>;

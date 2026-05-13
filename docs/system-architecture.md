@@ -212,7 +212,7 @@ See `plans/reports/review-260513-0845-mvp-production-readiness.md` for the full 
 2. **Webhook HMAC secret can be empty** — placeholder secret in repo allows free Pro grants.
 3. **Subscription tier lookup not sorted** — paying users may be wrongly downgraded after upgrade/cancel/resub.
 4. **CORS literal `chrome-extension://*` doesn't match anything** — preflight always blocked.
-5. **Sign-in UX missing** — JWT must be in `chrome.storage.local` but no flow exists to put it there.
+5. ~~**Sign-in UX missing**~~ — **RESOLVED** (2026-05-13): Google OAuth via `chrome.identity.launchWebAuthFlow` + magic-link copy-paste flow implemented. JWT stored at `chrome.storage.local.authToken` after sign-in. See `auth-client.ts` and updated `account-view.tsx`.
 
 ## Where to learn more
 

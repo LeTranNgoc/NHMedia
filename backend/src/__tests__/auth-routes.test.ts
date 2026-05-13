@@ -204,6 +204,236 @@ describe('POST /auth/google/callback', () => {
   });
 });
 
+// ── Magic link with extensionId (bridge mode) ─────────────────────────────────
+describe('POST /auth/magic-link/request with extensionId', () => {
+  it('returns 204 and stores extensionId when allowlist is empty (dev mode)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/magic-link/request',
+      payload: { email: 'ext@example.com', extensionId: 'anyextensionid' },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(mockEmailService.sendMagicLink).toHaveBeenCalledOnce();
+    // verify extensionId stored in token doc
+    const doc = await db.collection('magic_link_tokens').findOne({ email: 'ext@example.com' });
+    expect(doc?.extensionId).toBe('anyextensionid');
+  });
+
+  it('returns 403 when extensionId is not in allowlist', async () => {
+    // Rebuild app with an explicit allowlist
+    const { buildApp: buildAppFresh } = await import('../app.js');
+    const restrictedApp = await buildAppFresh({
+      db,
+      env: { ...TEST_ENV, ALLOWED_EXTENSION_IDS: 'allowedid123' },
+      overrides: { emailService: mockEmailService, emailRateLimiter: rateLimiter },
+    });
+    await restrictedApp.ready();
+
+    const res = await restrictedApp.inject({
+      method: 'POST',
+      url: '/auth/magic-link/request',
+      payload: { email: 'ext@example.com', extensionId: 'notallowed' },
+    });
+    expect(res.statusCode).toBe(403);
+    await restrictedApp.close();
+  });
+});
+
+describe('GET /auth/magic-link/verify with extensionId (bridge mode)', () => {
+  async function seedTokenWithExtension(extensionId: string) {
+    const { createHash, randomBytes } = await import('node:crypto');
+    const raw = randomBytes(32).toString('hex');
+    const hash = createHash('sha256').update(raw).digest('hex');
+    await db.collection('magic_link_tokens').insertOne({
+      tokenHash: hash,
+      email: 'bridge@example.com',
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      used: false,
+      createdAt: new Date(),
+      extensionId,
+    });
+    return raw;
+  }
+
+  it('returns HTML bridge page (not JSON) when extensionId stored with token', async () => {
+    const raw = await seedTokenWithExtension('testextensionid123');
+    const res = await app.inject({
+      method: 'GET',
+      url: `/auth/magic-link/verify?token=${raw}`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/html/);
+    const html = res.body;
+    expect(html).toContain('testextensionid123.chromiumapp.org');
+    expect(html).toContain('token=');
+  });
+
+  it('returns JSON (not HTML) when no extensionId stored', async () => {
+    const { createHash, randomBytes } = await import('node:crypto');
+    const raw = randomBytes(32).toString('hex');
+    const hash = createHash('sha256').update(raw).digest('hex');
+    await db.collection('magic_link_tokens').insertOne({
+      tokenHash: hash,
+      email: 'json@example.com',
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      used: false,
+      createdAt: new Date(),
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/auth/magic-link/verify?token=${raw}`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    const body = res.json<{ token: string }>();
+    expect(typeof body.token).toBe('string');
+  });
+});
+
+// ── Google OAuth extension flow ───────────────────────────────────────────────
+describe('GET /auth/google/extension-start', () => {
+  it('returns 400 when extension_id missing', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/auth/google/extension-start',
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('returns 302 redirect to Google OAuth for any extension in dev mode (empty allowlist)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/auth/google/extension-start?extension_id=someextensionid',
+    });
+    // inject does NOT follow redirects — check 302 + Location header
+    expect(res.statusCode).toBe(302);
+    const location = res.headers['location'] as string;
+    expect(location).toContain('accounts.google.com');
+    // state param is a signed JWT — verify it decodes to extensionId
+    const stateMatch = location.match(/[?&]state=([^&]+)/);
+    expect(stateMatch).not.toBeNull();
+    const { JwtService } = await import('../auth/jwt-service.js');
+    const jwtSvc = new JwtService(TEST_ENV.JWT_SECRET);
+    const payload = await jwtSvc.verifyRaw(decodeURIComponent(stateMatch![1]!));
+    expect(payload['extensionId']).toBe('someextensionid');
+  });
+
+  it('returns 403 when extension_id not in allowlist', async () => {
+    const { buildApp: buildAppFresh } = await import('../app.js');
+    const restrictedApp = await buildAppFresh({
+      db,
+      env: { ...TEST_ENV, ALLOWED_EXTENSION_IDS: 'allowedext' },
+      overrides: { emailService: mockEmailService, emailRateLimiter: rateLimiter },
+    });
+    await restrictedApp.ready();
+
+    const res = await restrictedApp.inject({
+      method: 'GET',
+      url: '/auth/google/extension-start?extension_id=badextension',
+    });
+    expect(res.statusCode).toBe(403);
+    await restrictedApp.close();
+  });
+
+  it('returns 200 redirect for allowlisted extension_id', async () => {
+    const { buildApp: buildAppFresh } = await import('../app.js');
+    const allowedApp = await buildAppFresh({
+      db,
+      env: { ...TEST_ENV, ALLOWED_EXTENSION_IDS: 'goodextension' },
+      overrides: { emailService: mockEmailService, emailRateLimiter: rateLimiter },
+    });
+    await allowedApp.ready();
+
+    const res = await allowedApp.inject({
+      method: 'GET',
+      url: '/auth/google/extension-start?extension_id=goodextension',
+    });
+    expect(res.statusCode).toBe(302);
+    expect(res.headers['location']).toContain('accounts.google.com');
+    await allowedApp.close();
+  });
+});
+
+describe('GET /auth/google/callback (OAuth code flow)', () => {
+  it('returns 400 when code or state missing', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/auth/google/callback?code=somecode',
+      // state missing
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('returns 400 when state JWT is invalid/expired', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/auth/google/callback?code=somecode&state=not.a.valid.jwt',
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json<{ code: string }>();
+    expect(body.code).toBe('INVALID_STATE');
+  });
+
+  it('returns 400 when error param present (user denied OAuth)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/auth/google/callback?error=access_denied',
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json<{ code: string }>();
+    expect(body.code).toBe('OAUTH_ERROR');
+  });
+
+  it('returns 302 to chromiumapp.org when code exchange succeeds', async () => {
+    const { JwtService } = await import('../auth/jwt-service.js');
+
+    const jwtSvc = new JwtService(TEST_ENV.JWT_SECRET);
+    // State JWT uses userId/email empty stubs — same as the route handler does
+    const validState = await jwtSvc.sign(
+      { extensionId: 'testextid', userId: '', email: '' } as unknown as import('../auth/jwt-service.js').JwtClaims,
+      '5m',
+    );
+
+    // Mock GoogleOAuthService.exchangeCode to return a user without hitting Google
+    const mockGoogleService = {
+      verifyIdToken: vi.fn(),
+      buildAuthUrl: vi.fn().mockReturnValue('https://accounts.google.com/o/oauth2/auth?mock'),
+      exchangeCode: vi.fn().mockResolvedValue({
+        _id: { toString: () => 'mockuserid' },
+        email: 'oauth@example.com',
+        name: 'OAuth User',
+        picture: null,
+        authProviders: ['google'],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const { buildApp: buildAppFresh } = await import('../app.js');
+    const mockedApp = await buildAppFresh({
+      db,
+      env: TEST_ENV,
+      overrides: {
+        emailService: mockEmailService,
+        emailRateLimiter: rateLimiter,
+        googleOAuthService: mockGoogleService,
+      },
+    });
+    await mockedApp.ready();
+
+    const res = await mockedApp.inject({
+      method: 'GET',
+      url: `/auth/google/callback?code=mockcode&state=${validState}`,
+    });
+
+    expect(res.statusCode).toBe(302);
+    expect(res.headers['location']).toContain('testextid.chromiumapp.org');
+    expect(res.headers['location']).toContain('token=');
+    await mockedApp.close();
+  });
+});
+
 // ── Auth Me ───────────────────────────────────────────────────────────────────
 describe('GET /auth/me', () => {
   async function getJwt(email = 'me@example.com'): Promise<string> {

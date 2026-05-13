@@ -83,7 +83,23 @@ describe('MagicLinkService.verify', () => {
   it('returns user on valid token (creates user if not exists)', async () => {
     const raw = await createToken();
     const result = await svc.verify(raw);
-    expect(result.email).toBe('user@example.com');
+    expect(result.user.email).toBe('user@example.com');
+    expect(result.extensionId).toBeUndefined();
+  });
+
+  it('returns extensionId when stored with token', async () => {
+    const { rawToken, hashedToken } = await svc.generateToken();
+    await db.collection('magic_link_tokens').insertOne({
+      tokenHash: hashedToken,
+      email: 'ext@example.com',
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      used: false,
+      createdAt: new Date(),
+      extensionId: 'myextid',
+    });
+    const result = await svc.verify(rawToken);
+    expect(result.user.email).toBe('ext@example.com');
+    expect(result.extensionId).toBe('myextid');
   });
 
   it('marks token as used after first verify', async () => {

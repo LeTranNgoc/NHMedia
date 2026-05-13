@@ -1,20 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { BillingMeResponse, UsageSummary } from '@translate-voice/shared';
 import { getBillingMe, startCheckout, getUsageHistory } from '../../shared/billing-api-client';
+import { signInWithGoogle, requestMagicLink, signInWithToken, signOut } from '../../shared/auth-client';
 import { PlanBadge } from '../components/plan-badge';
 import { UsageMeter } from '../components/usage-meter';
 import { UpgradeCta } from '../components/upgrade-cta';
 
 type LoadState = 'loading' | 'loaded' | 'error' | 'unauthenticated';
+type SignInStep = 'idle' | 'email-form' | 'link-sent' | 'google-pending';
 
 const POLAR_CUSTOMER_PORTAL_URL = 'https://polar.sh/settings';
 
 /**
- * AccountView — replaces Phase 07 stub.
- * Shows live plan + usage from /billing/me, upgrade CTA for free users,
- * manage subscription link for pro users, and 7-day usage history.
- *
- * Also surfaces quota_exceeded banner when WS connection was closed 4003.
+ * AccountView — shows plan + usage when authenticated, sign-in card when not.
+ * Sign-in paths: Google OAuth (launchWebAuthFlow) + magic-link copy-paste.
  */
 export function AccountView() {
   const [loadState, setLoadState] = useState<LoadState>('loading');
@@ -23,6 +22,14 @@ export function AccountView() {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [quotaExceeded, setQuotaExceeded] = useState(false);
+
+  // ── Sign-in state ────────────────────────────────────────────────────────
+  const [signInStep, setSignInStep] = useState<SignInStep>('idle');
+  const [email, setEmail] = useState('');
+  const [sentEmail, setSentEmail] = useState('');
+  const [pastedToken, setPastedToken] = useState('');
+  const [signInError, setSignInError] = useState<string | null>(null);
+  const [signInLoading, setSignInLoading] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -44,10 +51,7 @@ export function AccountView() {
   useEffect(() => {
     void load();
 
-    // Listen for quota_exceeded events from SW (WS close 4003)
-    const listener = (
-      message: unknown,
-    ) => {
+    const listener = (message: unknown) => {
       if (
         typeof message === 'object' &&
         message !== null &&
@@ -74,7 +78,65 @@ export function AccountView() {
     }
   };
 
-  // ── Loading ────────────────────────────────────────────────────────────────
+  // ── Sign-in handlers ─────────────────────────────────────────────────────
+
+  const handleGoogleSignIn = async () => {
+    setSignInError(null);
+    setSignInLoading(true);
+    setSignInStep('google-pending');
+    try {
+      await signInWithGoogle();
+      // Token stored — reload account data
+      await load();
+    } catch (err) {
+      setSignInError(err instanceof Error ? err.message : 'Đăng nhập thất bại');
+      setSignInStep('idle');
+    } finally {
+      setSignInLoading(false);
+    }
+  };
+
+  const handleMagicLinkRequest = async () => {
+    if (!email.trim()) return;
+    setSignInError(null);
+    setSignInLoading(true);
+    try {
+      await requestMagicLink(email.trim());
+      setSentEmail(email.trim());
+      setSignInStep('link-sent');
+    } catch (err) {
+      setSignInError(err instanceof Error ? err.message : 'Gửi link thất bại');
+    } finally {
+      setSignInLoading(false);
+    }
+  };
+
+  const handleSaveToken = async () => {
+    if (!pastedToken.trim()) return;
+    setSignInError(null);
+    setSignInLoading(true);
+    try {
+      await signInWithToken(pastedToken.trim());
+      await load();
+    } catch (err) {
+      setSignInError(err instanceof Error ? err.message : 'Token không hợp lệ');
+    } finally {
+      setSignInLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    await signOut();
+    setBilling(null);
+    setHistory([]);
+    setSignInStep('idle');
+    setEmail('');
+    setPastedToken('');
+    setSignInError(null);
+    setLoadState('unauthenticated');
+  };
+
+  // ── Loading ──────────────────────────────────────────────────────────────
   if (loadState === 'loading') {
     return (
       <div className="flex flex-col gap-4 p-4" aria-busy="true" aria-label="Đang tải">
@@ -85,18 +147,127 @@ export function AccountView() {
     );
   }
 
-  // ── Unauthenticated ────────────────────────────────────────────────────────
+  // ── Unauthenticated — sign-in card ───────────────────────────────────────
   if (loadState === 'unauthenticated') {
     return (
-      <div className="flex flex-col gap-4 p-4">
-        <p className="text-sm text-gray-700">
-          Đăng nhập để xem plan và usage của bạn.
-        </p>
+      <div className="flex flex-col gap-3 p-4">
+        <p className="text-sm font-medium text-gray-700">Đăng nhập để xem plan và usage</p>
+
+        {signInError && (
+          <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600" role="alert">
+            Đăng nhập thất bại: {signInError}
+          </p>
+        )}
+
+        {/* ── Google button ─────────────────────────────────────────────── */}
+        {signInStep !== 'email-form' && signInStep !== 'link-sent' && (
+          <button
+            type="button"
+            onClick={() => void handleGoogleSignIn()}
+            disabled={signInLoading}
+            aria-busy={signInLoading}
+            className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 disabled:opacity-60"
+          >
+            {signInStep === 'google-pending' ? (
+              <span className="animate-spin">⟳</span>
+            ) : (
+              <GoogleIcon />
+            )}
+            Đăng nhập với Google
+          </button>
+        )}
+
+        {/* ── Email / magic-link flow ───────────────────────────────────── */}
+        {signInStep === 'idle' && (
+          <button
+            type="button"
+            onClick={() => { setSignInStep('email-form'); setSignInError(null); }}
+            className="flex min-h-[44px] w-full items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
+          >
+            Đăng nhập bằng email
+          </button>
+        )}
+
+        {signInStep === 'email-form' && (
+          <div className="flex flex-col gap-2">
+            <label htmlFor="signin-email" className="text-xs font-medium text-gray-600">
+              Email của bạn
+            </label>
+            <input
+              id="signin-email"
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleMagicLinkRequest(); }}
+              placeholder="ban@example.com"
+              className="min-h-[44px] rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              disabled={signInLoading}
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void handleMagicLinkRequest()}
+                disabled={signInLoading || !email.trim()}
+                aria-busy={signInLoading}
+                className="flex min-h-[44px] flex-1 items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 disabled:opacity-60"
+              >
+                {signInLoading ? 'Đang gửi…' : 'Gửi link đăng nhập'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSignInStep('idle'); setSignInError(null); setEmail(''); }}
+                className="min-h-[44px] rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
+              >
+                Hủy
+              </button>
+            </div>
+          </div>
+        )}
+
+        {signInStep === 'link-sent' && (
+          <div className="flex flex-col gap-2">
+            <p className="rounded-md bg-green-50 px-3 py-2 text-xs text-green-700">
+              Đã gửi link đến <strong>{sentEmail}</strong>. Mở email và click vào link để hoàn tất
+              đăng nhập, sau đó sao chép token và dán vào đây.
+            </p>
+            <label htmlFor="paste-token" className="text-xs font-medium text-gray-600">
+              Dán token từ trang đăng nhập
+            </label>
+            <textarea
+              id="paste-token"
+              rows={3}
+              value={pastedToken}
+              onChange={(e) => setPastedToken(e.target.value)}
+              placeholder="Dán JWT token vào đây..."
+              className="rounded-md border border-gray-300 px-3 py-2 text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              disabled={signInLoading}
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void handleSaveToken()}
+                disabled={signInLoading || !pastedToken.trim()}
+                aria-busy={signInLoading}
+                className="flex min-h-[44px] flex-1 items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 disabled:opacity-60"
+              >
+                {signInLoading ? 'Đang xác thực…' : 'Lưu token'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSignInStep('idle'); setPastedToken(''); setSignInError(null); }}
+                className="min-h-[44px] rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
+              >
+                Hủy
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
-  // ── Error ──────────────────────────────────────────────────────────────────
+  // ── Error ────────────────────────────────────────────────────────────────
   if (loadState === 'error' || billing === null) {
     return (
       <div className="flex flex-col gap-4 p-4">
@@ -117,9 +288,10 @@ export function AccountView() {
   const { tier, usageToday } = billing;
   const isPro = tier === 'pro';
 
+  // ── Authenticated ────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-4 p-4">
-      {/* ── Quota exceeded banner ─────────────────────────────────────────── */}
+      {/* ── Quota exceeded banner ──────────────────────────────────────── */}
       {quotaExceeded && (
         <div
           role="alert"
@@ -129,19 +301,19 @@ export function AccountView() {
         </div>
       )}
 
-      {/* ── Plan header ───────────────────────────────────────────────────── */}
+      {/* ── Plan header ───────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700">Gói hiện tại</span>
         <PlanBadge tier={tier} />
       </div>
 
-      {/* ── Usage meter ───────────────────────────────────────────────────── */}
+      {/* ── Usage meter ───────────────────────────────────────────────── */}
       <UsageMeter
         secondsCaptured={usageToday.secondsCaptured}
         limitSeconds={usageToday.limitSeconds}
       />
 
-      {/* ── Pro CTA / Manage ──────────────────────────────────────────────── */}
+      {/* ── Pro CTA / Manage ──────────────────────────────────────────── */}
       {isPro ? (
         <a
           href={POLAR_CUSTOMER_PORTAL_URL}
@@ -165,7 +337,7 @@ export function AccountView() {
         </>
       )}
 
-      {/* ── 7-day usage history ───────────────────────────────────────────── */}
+      {/* ── 7-day usage history ───────────────────────────────────────── */}
       {history.length > 0 && (
         <section aria-label="Lịch sử usage 7 ngày">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
@@ -175,11 +347,12 @@ export function AccountView() {
             {history.map((day) => {
               const mins = Math.floor(day.secondsCaptured / 60);
               const secs = day.secondsCaptured % 60;
-              const label = day.secondsCaptured === 0
-                ? '0s'
-                : mins > 0
-                  ? `${mins}m ${secs}s`
-                  : `${secs}s`;
+              const label =
+                day.secondsCaptured === 0
+                  ? '0s'
+                  : mins > 0
+                    ? `${mins}m ${secs}s`
+                    : `${secs}s`;
               return (
                 <li
                   key={day.date}
@@ -193,6 +366,47 @@ export function AccountView() {
           </ul>
         </section>
       )}
+
+      {/* ── Sign out ──────────────────────────────────────────────────── */}
+      <button
+        type="button"
+        onClick={() => void handleSignOut()}
+        className="min-h-[44px] w-full rounded-md border border-gray-200 px-4 py-2 text-sm text-gray-500 hover:bg-gray-50 hover:text-red-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
+      >
+        Đăng xuất
+      </button>
     </div>
+  );
+}
+
+// ── Internal: Google "G" icon (inline SVG, no external dep) ─────────────────
+
+function GoogleIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="16"
+      height="16"
+      viewBox="0 0 48 48"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M43.6 20.5h-1.9V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.4 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.2-.1-2.2-.4-3.5z"
+        fill="#FFC107"
+      />
+      <path
+        d="M6.3 14.7l6.6 4.8C14.6 16.1 19 13 24 13c3.1 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.4 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"
+        fill="#FF3D00"
+      />
+      <path
+        d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.3 35.3 26.8 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"
+        fill="#4CAF50"
+      />
+      <path
+        d="M43.6 20.5h-1.9V20H24v8h11.3c-.8 2.2-2.3 4.1-4.1 5.4l6.2 5.2C37 38 44 33 44 24c0-1.2-.1-2.2-.4-3.5z"
+        fill="#1976D2"
+      />
+    </svg>
   );
 }
