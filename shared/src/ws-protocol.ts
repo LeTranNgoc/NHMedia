@@ -1,9 +1,14 @@
 // ── Client → Server control frames ────────────────────────────────────────────
 
+export const ALLOWED_TARGET_LANGS = ['vi', 'en', 'ko', 'ja', 'fr', 'de', 'hi', 'zh-Hans'] as const;
+export type AllowedTargetLang = (typeof ALLOWED_TARGET_LANGS)[number];
+
 export interface ConfigFrame {
   type: 'config';
   srcLang: string;
   audioMode: 'voice-over' | 'replacement';
+  /** Target translation language. Defaults to 'vi' if omitted. */
+  targetLang?: AllowedTargetLang;
 }
 
 export interface PauseFrame {
@@ -16,6 +21,14 @@ export interface ResumeFrame {
 
 export interface FlushFrame {
   type: 'flush';
+}
+
+/** Caption chunk from subtitle-first path. Backend bypasses ASR for this frame type. */
+export interface CaptionFrame {
+  type: 'caption';
+  text: string;
+  ts: number;
+  isFinal: boolean;
 }
 
 // ── Server → Client frames ─────────────────────────────────────────────────────
@@ -54,7 +67,7 @@ export interface WarningFrame {
 
 // ── Discriminated union ────────────────────────────────────────────────────────
 
-export type ClientControlFrame = ConfigFrame | PauseFrame | ResumeFrame | FlushFrame;
+export type ClientControlFrame = ConfigFrame | PauseFrame | ResumeFrame | FlushFrame | CaptionFrame;
 
 export type ServerControlFrame =
   | TranscriptFrame

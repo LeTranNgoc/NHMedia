@@ -17,15 +17,29 @@ export interface UsageSummary {
   percentUsed: number | null;
 }
 
+// ── Multi-kind usage totals ───────────────────────────────────────────────────
+
+export interface UsageTotalsResponse {
+  seconds: number | null;
+  translateChars: number | null;
+  ttsChars: number | null;
+}
+
 // ── Billing /me response ──────────────────────────────────────────────────────
 
 export interface BillingMeResponse {
   tier: Tier;
   usageToday: {
+    /** @deprecated use limits.seconds instead */
     secondsCaptured: number;
+    /** @deprecated use limits.seconds instead */
     limitSeconds: number | null;
+    /** @deprecated use limits.seconds instead */
     percentUsed: number | null;
+    translateChars: number;
+    ttsChars: number;
   };
+  limits: UsageTotalsResponse;
 }
 
 // ── Checkout response ─────────────────────────────────────────────────────────
