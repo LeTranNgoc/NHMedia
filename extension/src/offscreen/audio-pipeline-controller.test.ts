@@ -88,6 +88,7 @@ vi.stubGlobal('AudioContext', vi.fn().mockImplementation(() => ({
 const mockWsConnect = vi.fn<() => void>();
 const mockWsSendAudio = vi.fn<(b: Int16Array) => void>();
 const mockWsSendControl = vi.fn<(f: object) => void>();
+const mockWsSendStickyControl = vi.fn<(f: object) => void>();
 const mockWsClose = vi.fn<() => void>();
 let mockWsBufferedAmount = 0;
 
@@ -105,6 +106,7 @@ vi.mock('./ws-client', () => ({
       connect: mockWsConnect,
       sendAudio: mockWsSendAudio,
       sendControl: mockWsSendControl,
+      sendStickyControl: mockWsSendStickyControl,
       close: mockWsClose,
       get bufferedAmount() { return mockWsBufferedAmount; },
     };
@@ -122,7 +124,7 @@ vi.stubGlobal('chrome', {
 
 const DEFAULT_PAYLOAD: StartPayload = {
   streamId: 'stream-abc',
-  config: { srcLang: 'en', wsUrl: 'ws://localhost:3000/ws', jwt: 'tok' },
+  config: { srcLang: 'en', targetLang: 'vi', wsUrl: 'ws://localhost:3000/ws', jwt: 'tok', audioMode: 'voice-over' },
 };
 
 function makeSpeechChunk(): Int16Array {
@@ -173,10 +175,10 @@ describe('AudioPipelineController — start sequence', () => {
     expect(mockWsConnect).toHaveBeenCalledOnce();
   });
 
-  it('sends config control frame with srcLang', async () => {
+  it('sends sticky config frame with srcLang and targetLang', async () => {
     await ctrl.start(DEFAULT_PAYLOAD);
-    expect(mockWsSendControl).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'config', srcLang: 'en' }),
+    expect(mockWsSendStickyControl).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'config', srcLang: 'en', targetLang: 'vi' }),
     );
   });
 

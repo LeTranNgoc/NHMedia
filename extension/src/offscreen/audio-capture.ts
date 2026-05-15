@@ -20,8 +20,22 @@ export class AudioCapture {
   private source: MediaStreamAudioSourceNode | null = null;
   private workletNode: AudioWorkletNode | null = null;
   private stream: MediaStream | null = null;
+  /**
+   * Gain node between captured source and destination. Tab-audio capture in
+   * Chrome diverts the tab output into the stream, silencing the user's
+   * speakers — we have to route it back through this gain to keep audible.
+   * DuckingManager can adjust this gain (0..1) for voice-over / replacement.
+   */
+  private playbackGain: GainNode | null = null;
 
   constructor(private readonly ringBuffer: RingBuffer) {}
+
+  /** Set captured-audio gain (0 = mute, 1 = full). DuckingManager hook. */
+  setPlaybackGain(value: number): void {
+    if (this.playbackGain) {
+      this.playbackGain.gain.value = Math.max(0, Math.min(1, value));
+    }
+  }
 
   /**
    * Acquire the tab audio stream and start piping samples into the ring buffer.
@@ -65,10 +79,26 @@ export class AudioCapture {
       },
     });
 
-    // Connect graph: source → worklet → (not connected to destination — capture only)
+    // Connect graph:
+    //   source ┬→ workletNode  (PCM tap for VAD + WS streaming)
+    //          └→ playbackGain → destination  (user hears original audio)
+    // The destination branch is REQUIRED — chromeMediaSource:'tab' diverts the
+    // tab output into the stream, so without this route the user hears silence.
     this.source.connect(this.workletNode);
-    // Deliberately NOT connecting workletNode to ctx.destination —
-    // we are capturing, not playing back. Avoids echo on the user's speakers.
+    this.playbackGain = this.ctx.createGain();
+    this.playbackGain.gain.value = 1; // full volume by default
+    this.source.connect(this.playbackGain);
+    this.playbackGain.connect(this.ctx.destination);
+
+    // Chrome offscreen contexts can start in 'suspended' state without a direct
+    // user gesture — explicit resume() is required to unmute playback.
+    console.info('[audio-capture] ctx state before resume:', this.ctx.state);
+    try {
+      await this.ctx.resume();
+    } catch (e) {
+      console.error('[audio-capture] resume() failed:', e);
+    }
+    console.info('[audio-capture] ctx state after resume:', this.ctx.state);
   }
 
   /** Disconnect audio graph, stop media tracks, close AudioContext. */
@@ -80,6 +110,10 @@ export class AudioCapture {
     if (this.source) {
       this.source.disconnect();
       this.source = null;
+    }
+    if (this.playbackGain) {
+      this.playbackGain.disconnect();
+      this.playbackGain = null;
     }
     if (this.stream) {
       this.stream.getTracks().forEach((t) => t.stop());

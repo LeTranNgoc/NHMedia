@@ -11,7 +11,12 @@ declare module "wxt/browser" {
     | "/icon-16.png"
     | "/icon-48.png"
     | "/offscreen.html"
+    | "/ort/ort-wasm-simd-threaded.jsep.mjs"
+    | "/ort/ort-wasm-simd-threaded.jsep.wasm"
+    | "/ort/ort-wasm-simd-threaded.mjs"
+    | "/ort/ort-wasm-simd-threaded.wasm"
     | "/popup.html"
+    | "/vad/silero-vad.onnx"
     | "/vad/silero-vad.onnx.LICENSE"
     | "/worklet/downsample-processor.js"
   type HtmlPublicPath = Extract<PublicPath, `${string}.html`>

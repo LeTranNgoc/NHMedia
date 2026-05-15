@@ -31,8 +31,15 @@ export function SettingsView() {
       />
 
       <LanguagePicker
+        mode="source"
         value={settings.srcLanguage}
         onChange={(lang) => void updateSettings({ srcLanguage: lang })}
+      />
+
+      <LanguagePicker
+        mode="target"
+        value={settings.targetLanguage}
+        onChange={(lang) => void updateSettings({ targetLanguage: lang })}
       />
 
       <div className="border-t border-gray-100" />

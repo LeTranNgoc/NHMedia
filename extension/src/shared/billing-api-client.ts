@@ -74,6 +74,17 @@ export async function startCheckout(): Promise<void> {
 }
 
 /**
+ * GET /billing/checkout-url — pre-built Polar hosted checkout URL.
+ * customer_external_id is set server-side from JWT — no client data injected.
+ * Opens the returned URL in a new tab after validating it's a polar.sh URL.
+ */
+export async function openCheckoutUrl(): Promise<void> {
+  const result = await apiFetch<{ url: string }>('/billing/checkout-url');
+  assertPolarUrl(result.url);
+  await chrome.tabs.create({ url: result.url });
+}
+
+/**
  * GET /billing/usage?days=N — daily usage breakdown.
  */
 export async function getUsageHistory(days = 7): Promise<UsageSummary[]> {

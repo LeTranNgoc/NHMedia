@@ -1,42 +1,64 @@
 import type { Settings } from '../../shared/settings-schema';
+import { SOURCE_LANG_OPTIONS, TARGET_LANG_OPTIONS } from '../../shared/language-options';
 
-interface LanguagePickerProps {
-  value: Settings['srcLanguage'];
-  onChange: (lang: Settings['srcLanguage']) => void;
+type SrcLang = Settings['srcLanguage'];
+type TgtLang = Settings['targetLanguage'];
+
+interface LanguagePickerSourceProps {
+  mode: 'source';
+  value: SrcLang;
+  onChange: (lang: SrcLang) => void;
+  label?: string;
   disabled?: boolean;
 }
 
-const LANGUAGES: { value: Settings['srcLanguage']; label: string }[] = [
-  { value: 'auto', label: 'Auto-detect' },
-  { value: 'en',   label: 'English' },
-  { value: 'ja',   label: 'Japanese' },
-  { value: 'ko',   label: 'Korean' },
-  { value: 'fr',   label: 'French' },
-  { value: 'de',   label: 'German' },
-];
+interface LanguagePickerTargetProps {
+  mode: 'target';
+  value: TgtLang;
+  onChange: (lang: TgtLang) => void;
+  label?: string;
+  disabled?: boolean;
+}
 
-export function LanguagePicker({ value, onChange, disabled = false }: LanguagePickerProps) {
+type LanguagePickerProps = LanguagePickerSourceProps | LanguagePickerTargetProps;
+
+const PICKER_ID_SOURCE = 'tv-language-picker-source';
+const PICKER_ID_TARGET = 'tv-language-picker-target';
+
+export function LanguagePicker(props: LanguagePickerProps) {
+  const { mode, disabled = false, label } = props;
+
+  const options = mode === 'source' ? SOURCE_LANG_OPTIONS : TARGET_LANG_OPTIONS;
+  const id = mode === 'source' ? PICKER_ID_SOURCE : PICKER_ID_TARGET;
+  const defaultLabel = mode === 'source' ? 'Source language' : 'Target language';
+
   return (
     <div className="space-y-1">
       <label
-        htmlFor="tv-language-picker"
+        htmlFor={id}
         className="block text-xs font-medium text-gray-500 uppercase tracking-wide"
       >
-        Source language
+        {label ?? defaultLabel}
       </label>
       <select
-        id="tv-language-picker"
-        value={value}
+        id={id}
+        value={props.value}
         disabled={disabled}
-        onChange={(e) => onChange(e.target.value as Settings['srcLanguage'])}
+        onChange={(e) => {
+          if (mode === 'source') {
+            (props as LanguagePickerSourceProps).onChange(e.target.value as SrcLang);
+          } else {
+            (props as LanguagePickerTargetProps).onChange(e.target.value as TgtLang);
+          }
+        }}
         className={[
           'w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700',
           'focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500',
           'disabled:cursor-not-allowed disabled:opacity-50',
         ].join(' ')}
       >
-        {LANGUAGES.map((lang) => (
-          <option key={lang.value} value={lang.value}>
+        {options.map((lang) => (
+          <option key={lang.code} value={lang.code}>
             {lang.label}
           </option>
         ))}

@@ -80,7 +80,36 @@ describe('getDefaultSettings', () => {
     expect(defaults.duckingPercent).toBe(30);
     expect(defaults.voiceGender).toBe('female');
     expect(defaults.srcLanguage).toBe('auto');
+    expect(defaults.targetLanguage).toBe('vi');
     expect(defaults.subtitle).toBe(true);
+  });
+});
+
+describe('targetLanguage — round-trip', () => {
+  beforeEach(() => {
+    storedData = {};
+    vi.mocked(mockStorage.sync.set).mockClear();
+    vi.mocked(mockStorage.sync.get).mockClear();
+  });
+
+  it('defaults to "vi" when storage is empty', async () => {
+    mockStorage.sync.get.mockResolvedValueOnce({});
+    const { loadSettings: load } = await import('./settings-store');
+    const s = await load();
+    expect(s.targetLanguage).toBe('vi');
+  });
+
+  it('persists and reloads targetLanguage correctly', async () => {
+    await updateSettings({ targetLanguage: 'ko' });
+    // Simulate reload from what was written
+    const written = vi.mocked(mockStorage.sync.set).mock.calls[0][0] as Settings;
+    expect(written.targetLanguage).toBe('ko');
+  });
+
+  it('rejects invalid targetLanguage value', async () => {
+    await expect(
+      updateSettings({ targetLanguage: 'xx' as Settings['targetLanguage'] }),
+    ).rejects.toThrow();
   });
 });
 

@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { BillingMeResponse, UsageSummary } from '@translate-voice/shared';
-import { getBillingMe, startCheckout, getUsageHistory } from '../../shared/billing-api-client';
+import { getBillingMe, getUsageHistory } from '../../shared/billing-api-client';
 import { signInWithGoogle, requestMagicLink, signInWithToken, signOut } from '../../shared/auth-client';
 import { PlanBadge } from '../components/plan-badge';
 import { UsageMeter } from '../components/usage-meter';
-import { UpgradeCta } from '../components/upgrade-cta';
+import { UpgradeButton } from '../components/upgrade-button';
 
 type LoadState = 'loading' | 'loaded' | 'error' | 'unauthenticated';
 type SignInStep = 'idle' | 'email-form' | 'link-sent' | 'google-pending';
@@ -19,8 +19,6 @@ export function AccountView() {
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [billing, setBilling] = useState<BillingMeResponse | null>(null);
   const [history, setHistory] = useState<UsageSummary[]>([]);
-  const [checkoutLoading, setCheckoutLoading] = useState(false);
-  const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [quotaExceeded, setQuotaExceeded] = useState(false);
 
   // ── Sign-in state ────────────────────────────────────────────────────────
@@ -63,20 +61,6 @@ export function AccountView() {
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, [load]);
-
-  const handleUpgrade = async () => {
-    setCheckoutLoading(true);
-    setCheckoutError(null);
-    try {
-      await startCheckout();
-    } catch (err) {
-      setCheckoutError(
-        err instanceof Error ? err.message : 'Không thể kết nối dịch vụ thanh toán.',
-      );
-    } finally {
-      setCheckoutLoading(false);
-    }
-  };
 
   // ── Sign-in handlers ─────────────────────────────────────────────────────
 
@@ -313,28 +297,27 @@ export function AccountView() {
         limitSeconds={usageToday.limitSeconds}
       />
 
-      {/* ── Pro CTA / Manage ──────────────────────────────────────────── */}
+      {/* ── Pro badge / Upgrade ───────────────────────────────────────── */}
       {isPro ? (
-        <a
-          href={POLAR_CUSTOMER_PORTAL_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex min-h-[44px] items-center justify-center rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
-        >
-          Quản lý subscription
-        </a>
+        <div className="flex flex-col gap-2">
+          <div
+            className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800"
+            aria-label="Trạng thái gói Pro"
+          >
+            <span className="font-semibold">Pro</span>
+            <span className="text-green-600">— đang hoạt động</span>
+          </div>
+          <a
+            href={POLAR_CUSTOMER_PORTAL_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex min-h-[44px] items-center justify-center rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
+          >
+            Quản lý subscription
+          </a>
+        </div>
       ) : (
-        <>
-          {checkoutError && (
-            <p className="text-xs text-red-600" role="alert">
-              {checkoutError}
-            </p>
-          )}
-          <UpgradeCta
-            onUpgrade={() => void handleUpgrade()}
-            loading={checkoutLoading}
-          />
-        </>
+        <UpgradeButton />
       )}
 
       {/* ── 7-day usage history ───────────────────────────────────────── */}

@@ -3,6 +3,7 @@ import type {
   StatusResponse,
   SwVideoEventMsg,
   PipelineStatusMsg,
+  CcSourceInfo,
 } from '../shared/messaging-types';
 import type { OffscreenManager } from './offscreen-manager';
 import { TabCaptureHandler } from './tab-capture-handler';
@@ -33,6 +34,7 @@ export class MessageRouter {
   private activeTabId: number | null = null;
   private currentStatus: PipelineStatusMsg['status'] = 'idle';
   private detectedLang: string | undefined;
+  private ccSource: CcSourceInfo | undefined;
 
   constructor(private readonly offscreen: OffscreenManager) {
     this.tabCapture = new TabCaptureHandler(offscreen);
@@ -75,8 +77,10 @@ export class MessageRouter {
               tabId,
               config: {
                 srcLang: settings.srcLanguage === 'auto' ? 'en' : settings.srcLanguage,
+                targetLang: settings.targetLanguage,
                 wsUrl: WS_URL,
                 jwt,
+                audioMode: settings.audioMode,
               },
             });
             this.currentStatus = 'capturing';
@@ -96,6 +100,7 @@ export class MessageRouter {
         this.activeTabId = null;
         this.currentStatus = 'idle';
         this.detectedLang = undefined;
+        this.ccSource = undefined;
         void this.tabCapture.stopCapture().catch((e) =>
           console.error('[message-router] stopCapture failed:', e),
         );
@@ -221,6 +226,23 @@ export class MessageRouter {
         return false;
       }
 
+      case 'caption.chunk': {
+        // Forward caption chunk from content script to offscreen pipeline.
+        void this.offscreen.sendToOffscreen({
+          type: 'caption.chunk',
+          text: msg.text,
+          ts: msg.ts,
+        }).catch(() => {});
+        return false;
+      }
+
+      case 'caption.active': {
+        // Content script confirmed CC subtitle path is active.
+        this.ccSource = { lang: msg.lang, kind: msg.kind };
+        this.broadcastStatus();
+        return false;
+      }
+
       case 'content.startSession': {
         // Badge clicked start — SW resolves tab from sender (no `tabs` permission needed).
         const tabId = sender.tab?.id;
@@ -247,6 +269,7 @@ export class MessageRouter {
       type: 'pipeline.status',
       status: this.currentStatus,
       detectedLang: this.detectedLang,
+      ccSource: this.ccSource,
     };
     // Send to popup (all extension pages receive runtime messages).
     chrome.runtime.sendMessage(statusMsg).catch(() => {});

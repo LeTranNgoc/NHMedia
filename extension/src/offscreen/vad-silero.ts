@@ -1,6 +1,15 @@
 import * as ort from 'onnxruntime-web';
 import { AUDIO_CONFIG } from '../shared/audio-config';
 
+// Tell onnxruntime-web to fetch wasm artefacts from the extension bundle
+// (chrome-extension://<id>/ort/...) instead of jsdelivr CDN — extension CSP
+// forbids cross-origin fetches and 'unsafe-eval'.
+// Single-threaded mode avoids needing COOP/COEP for SharedArrayBuffer.
+if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
+  ort.env.wasm.wasmPaths = chrome.runtime.getURL('ort/');
+  ort.env.wasm.numThreads = 1;
+}
+
 /**
  * Silero VAD wrapper.
  *
@@ -27,17 +36,14 @@ export class SileroVad {
   private session: ort.InferenceSession | null = null;
   private fallbackMode = false;
 
-  /** Silero v4 RNN state (2 × 1 × 64 float32). */
-  private h: ort.Tensor;
-  private c: ort.Tensor;
+  /** Silero v5 combined LSTM state (2 × 1 × 128 float32). */
+  private state: ort.Tensor;
 
   /** Timestamp of last speech-positive window (ms). */
   private lastSpeechAt = -Infinity;
 
   constructor() {
-    // Initialise RNN hidden state to zeros.
-    this.h = new ort.Tensor('float32', new Float32Array(2 * 1 * 64), [2, 1, 64]);
-    this.c = new ort.Tensor('float32', new Float32Array(2 * 1 * 64), [2, 1, 64]);
+    this.state = new ort.Tensor('float32', new Float32Array(2 * 1 * 128), [2, 1, 128]);
   }
 
   /**
@@ -100,8 +106,7 @@ export class SileroVad {
 
   /** Reset RNN state and hangover timer (e.g. after a seek). */
   reset(): void {
-    this.h = new ort.Tensor('float32', new Float32Array(2 * 1 * 64), [2, 1, 64]);
-    this.c = new ort.Tensor('float32', new Float32Array(2 * 1 * 64), [2, 1, 64]);
+    this.state = new ort.Tensor('float32', new Float32Array(2 * 1 * 128), [2, 1, 128]);
     this.lastSpeechAt = -Infinity;
   }
 
@@ -127,15 +132,13 @@ export class SileroVad {
     const feeds: Record<string, ort.Tensor> = {
       input,
       sr,
-      h: this.h,
-      c: this.c,
+      state: this.state,
     };
 
     const results = await this.session!.run(feeds);
 
-    // Update RNN state for next window.
-    this.h = results['hn'] as ort.Tensor;
-    this.c = results['cn'] as ort.Tensor;
+    // Silero v5 returns combined state under 'stateN'.
+    this.state = results['stateN'] as ort.Tensor;
 
     const output = results['output'] as ort.Tensor;
     const prob = (output.data as Float32Array)[0];

@@ -36,6 +36,16 @@ export class WsClient {
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Control frames sent before WS reaches OPEN state are queued and flushed
+  // on 'open'. Without this, the initial config frame (sent right after connect())
+  // is silently dropped, leaving backend in asrStarted=false and discarding all audio.
+  private pendingControlFrames: WsFrame[] = [];
+
+  // Sticky control frames (e.g. config) — re-sent on EVERY open event, including
+  // reconnects. Backend treats each WS connection as a fresh session (asrStarted=false
+  // until config arrives) so reconnects MUST re-send config or audio is dropped silently.
+  private stickyControlFrames: WsFrame[] = [];
+
   private readonly opts: Required<WsClientOptions>;
 
   constructor(opts: WsClientOptions) {
@@ -61,10 +71,38 @@ export class WsClient {
     this.ws.send(buffer.buffer);
   }
 
-  /** Send a JSON control frame. */
+  /** Send a JSON control frame. Queues frames sent before WS is OPEN. */
   sendControl(frame: WsFrame): void {
-    if (this.ws?.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify(frame));
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(frame));
+      return;
+    }
+    // CONNECTING / CLOSING / CLOSED — queue and flush on next 'open'.
+    this.pendingControlFrames.push(frame);
+  }
+
+  /**
+   * Send a control frame AND remember it for re-send on every reconnect.
+   * Use for session-defining frames like 'config' that the backend must see
+   * on every new WS connection. The frame is stored in stickyControlFrames so
+   * the 'open' handler emits it on every (re)connect. If WS is already OPEN
+   * when called, send immediately as well. NEVER queue into pendingControlFrames
+   * — that would cause a duplicate send when the open handler flushes both.
+   */
+  sendStickyControl(frame: WsFrame): void {
+    this.stickyControlFrames.push(frame);
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(frame));
+    }
+    // Not OPEN yet → rely on 'open' handler flushing stickyControlFrames.
+  }
+
+  /**
+   * Send a caption chunk as a control frame.
+   * Used in subtitle-first mode — bypasses Deepgram ASR on backend.
+   */
+  sendCaption(text: string, ts: number): void {
+    this.sendControl({ type: 'caption', text, ts, isFinal: true });
   }
 
   /** How many bytes are buffered in the send queue. 0 if not connected. */
@@ -97,13 +135,37 @@ export class WsClient {
     this.ws = ws;
 
     ws.addEventListener('open', () => {
+      console.info(
+        '[ws] open — flushing',
+        this.pendingControlFrames.length,
+        'queued +',
+        this.stickyControlFrames.length,
+        'sticky control frames',
+      );
       this.reconnectAttempt = 0;
+      // Re-send sticky frames FIRST (config must arrive before audio on every reconnect).
+      for (const frame of this.stickyControlFrames) {
+        ws.send(JSON.stringify(frame));
+      }
+      // Then drain the one-shot queue.
+      for (const frame of this.pendingControlFrames) {
+        ws.send(JSON.stringify(frame));
+      }
+      this.pendingControlFrames = [];
     });
 
+    const seenFrameTypes = new Set<string>();
     ws.addEventListener('message', (ev) => {
       if (typeof ev.data === 'string') {
         try {
           const frame = JSON.parse(ev.data) as WsFrame;
+          if (!seenFrameTypes.has(frame.type)) {
+            seenFrameTypes.add(frame.type);
+            console.info('[ws] first frame type=', frame.type, 'full:', frame);
+          }
+          if (frame.type === 'error') {
+            console.error('[ws] error frame from server:', frame);
+          }
           this.opts.onFrame(frame);
         } catch {
           console.warn('[ws-client] unparseable JSON frame ignored');
@@ -113,6 +175,7 @@ export class WsClient {
     });
 
     ws.addEventListener('close', (ev) => {
+      console.info('[ws] close code=', ev.code, 'reason=', ev.reason);
       this.ws = null;
       if (this.stopped) return;
 

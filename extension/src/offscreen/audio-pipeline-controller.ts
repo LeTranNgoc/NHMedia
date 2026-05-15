@@ -9,8 +9,12 @@ import { WsReceiver } from './ws-receiver';
 
 export interface PipelineConfig {
   srcLang: string;
+  targetLang: string;
   wsUrl: string;
   jwt: string;
+  audioMode: 'voice-over' | 'replacement';
+  /** 'subtitle' skips AudioCapture + RingBuffer + VAD; only WS + playback are started. */
+  sourceMode?: 'audio' | 'subtitle';
 }
 
 export interface StartPayload {
@@ -48,6 +52,9 @@ export class AudioPipelineController {
 
   private tickTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Diagnostic counters — logged every 50 ticks (~5 s)
+  private stats = { ticks: 0, chunksRead: 0, speech: 0, sent: 0, backpressure: 0 };
+
   /** Samples per chunk = 100 ms × 16 kHz = 1600 */
   private readonly CHUNK_SAMPLES =
     AUDIO_CONFIG.CHUNK_BYTE_SIZE / 2; // Int16 = 2 bytes/sample
@@ -60,20 +67,34 @@ export class AudioPipelineController {
     this.state = 'starting';
 
     const { streamId, config } = payload;
+    const isSubtitleMode = config.sourceMode === 'subtitle';
 
     try {
-      // 1. Ring buffer
-      this.ringBuffer = new RingBuffer();
+      if (!isSubtitleMode) {
+        // 1. Ring buffer
+        this.ringBuffer = new RingBuffer();
 
-      // 2. VAD
-      this.vad = new SileroVad();
-      await this.vad.load();
-      if (this.vad.isFallback) {
-        console.warn('[pipeline] VAD in fallback mode — all audio will be sent');
+        // 2. VAD
+        this.vad = new SileroVad();
+        await this.vad.load();
+        if (this.vad.isFallback) {
+          console.warn('[pipeline] VAD in fallback mode — all audio will be sent');
+        }
+      } else {
+        console.info('[pipeline] subtitle mode — skipping AudioCapture + RingBuffer + VAD');
       }
 
       // 3. AudioContext for TTS playback (separate from capture context)
+      // Chrome offscreen documents can start AudioContext in 'suspended' state
+      // — explicit resume() is required for TTS playback to be audible.
       this.playbackCtx = new AudioContext();
+      console.info('[pipeline] playbackCtx state before resume:', this.playbackCtx.state);
+      try {
+        await this.playbackCtx.resume();
+      } catch (e) {
+        console.error('[pipeline] playbackCtx.resume() failed:', e);
+      }
+      console.info('[pipeline] playbackCtx state after resume:', this.playbackCtx.state);
       this.playbackQueue = new AudioPlaybackQueue(this.playbackCtx);
       this.wsReceiver = new WsReceiver(this.playbackQueue);
 
@@ -89,17 +110,26 @@ export class AudioPipelineController {
       });
       this.ws.connect();
 
-      // Send initial config frame so backend knows the source language.
-      this.ws.sendControl({ type: 'config', srcLang: config.srcLang });
+      // Sticky: re-sent on every WS reconnect. Backend treats each new WS as a
+      // fresh session — without sticky resend, audio after reconnect arrives
+      // with asrStarted=false and gets dropped silently.
+      this.ws.sendStickyControl({
+        type: 'config',
+        srcLang: config.srcLang,
+        targetLang: config.targetLang,
+        audioMode: config.audioMode,
+      });
 
-      // 5. Audio capture (getUserMedia + worklet)
-      this.capture = new AudioCapture(this.ringBuffer);
-      await this.capture.start(streamId);
+      if (!isSubtitleMode) {
+        // 5. Audio capture (getUserMedia + worklet)
+        this.capture = new AudioCapture(this.ringBuffer!);
+        await this.capture.start(streamId);
 
-      // 6. Start tick loop
-      this.tickTimer = setInterval(() => {
-        void this.tick();
-      }, AUDIO_CONFIG.CHUNK_DURATION_MS);
+        // 6. Start tick loop
+        this.tickTimer = setInterval(() => {
+          void this.tick();
+        }, AUDIO_CONFIG.CHUNK_DURATION_MS);
+      }
 
       this.state = 'running';
     } catch (err) {
@@ -107,6 +137,15 @@ export class AudioPipelineController {
       await this.cleanup();
       throw err;
     }
+  }
+
+  /**
+   * Forward a caption chunk over WebSocket.
+   * Only meaningful in subtitle mode — no-op when WS not connected.
+   */
+  pushCaption(text: string, ts: number): void {
+    if (this.state !== 'running') return;
+    this.ws?.sendCaption(text, ts);
   }
 
   async stop(): Promise<void> {
@@ -175,18 +214,30 @@ export class AudioPipelineController {
   private async tick(): Promise<void> {
     if (this.state !== 'running') return;
 
+    this.stats.ticks++;
+    if (this.stats.ticks % 50 === 0) {
+      console.info(
+        '[pipeline] stats',
+        { ...this.stats, wsBuffered: this.ws?.bufferedAmount ?? 0, vadFallback: this.vad?.isFallback },
+      );
+    }
+
     const chunk = this.ringBuffer?.read(this.CHUNK_SAMPLES);
     if (!chunk) return; // underflow — not enough samples yet
+    this.stats.chunksRead++;
 
     // Backpressure: skip if WS send buffer is too full.
     if ((this.ws?.bufferedAmount ?? 0) > AUDIO_CONFIG.WS_BACKPRESSURE_BYTES) {
+      this.stats.backpressure++;
       console.warn('[pipeline] WS backpressure — skipping chunk');
       return;
     }
 
     const speech = await this.vad!.isSpeech(chunk);
     if (speech) {
+      this.stats.speech++;
       this.ws?.sendAudio(chunk);
+      this.stats.sent++;
     }
     // Silence chunks are silently dropped — no logging to avoid audio content exposure.
   }

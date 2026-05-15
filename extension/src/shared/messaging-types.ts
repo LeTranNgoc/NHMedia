@@ -49,7 +49,14 @@ export interface SwVideoEventMsg {
   playbackRate?: number;
 }
 
-export type SwToOffscreenMsg = SwAudioStartMsg | SwAudioStopMsg | SwVideoEventMsg;
+/** Caption chunk forwarded from content script → SW → offscreen pipeline. */
+export interface SwCaptionChunkMsg {
+  type: 'caption.chunk';
+  text: string;
+  ts: number;
+}
+
+export type SwToOffscreenMsg = SwAudioStartMsg | SwAudioStopMsg | SwVideoEventMsg | SwCaptionChunkMsg;
 
 // ── Offscreen → SW ────────────────────────────────────────────────────────────
 
@@ -80,12 +87,20 @@ export interface PipelineTranslationMsg {
   text: string;
 }
 
+/** CC source info included in pipeline.status when subtitle path is active. */
+export interface CcSourceInfo {
+  lang: string;
+  kind: 'asr' | 'standard';
+}
+
 /** Status update broadcasted to popup/content. */
 export interface PipelineStatusMsg {
   type: 'pipeline.status';
   status: 'idle' | 'capturing' | 'translating' | 'playing' | 'error';
   detectedLang?: string;
   errorMessage?: string;
+  /** Present when CC subtitle path is active. */
+  ccSource?: CcSourceInfo;
 }
 
 /** Telemetry error from offscreen — AudioContext.close and other swallowed errors. */
@@ -118,7 +133,28 @@ export interface ContentStartSessionMsg {
   type: 'content.startSession';
 }
 
-export type ContentToSwMsg = ContentVideoEventMsg | ContentStartSessionMsg;
+/** Caption chunk from content script CC reader → SW → offscreen WS. */
+export interface ContentCaptionChunkMsg {
+  type: 'caption.chunk';
+  text: string;
+  ts: number;
+}
+
+/**
+ * Sent by content script when CC subtitle path is active.
+ * SW tracks this state and includes ccSource in next pipeline.status broadcast.
+ */
+export interface ContentCaptionActiveMsg {
+  type: 'caption.active';
+  lang: string;
+  kind: 'asr' | 'standard';
+}
+
+export type ContentToSwMsg =
+  | ContentVideoEventMsg
+  | ContentStartSessionMsg
+  | ContentCaptionChunkMsg
+  | ContentCaptionActiveMsg;
 
 // ── SW → Content Script ───────────────────────────────────────────────────────
 

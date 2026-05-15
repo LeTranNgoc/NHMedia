@@ -1,6 +1,7 @@
 import type { SwToOffscreenMsg } from '../shared/messaging-types';
 
-const OFFSCREEN_URL = 'offscreen/index.html' as const;
+// wxt flattens entrypoints — entrypoints/offscreen/index.html → offscreen.html at root.
+const OFFSCREEN_URL = 'offscreen.html' as const;
 // USER_MEDIA reason has no 30-second timeout (unlike AUDIO_PLAYBACK) — researcher-01 finding.
 const OFFSCREEN_REASON = chrome.offscreen.Reason.USER_MEDIA;
 const OFFSCREEN_JUSTIFICATION = 'Audio capture from YouTube for translation';

@@ -45,6 +45,13 @@ chrome.runtime.onMessage.addListener(
       return false;
     }
 
+    // Caption chunks from content script CC reader → forward to WS
+    if (msg.type === 'caption.chunk') {
+      controller.pushCaption(msg.text, msg.ts);
+      sendResponse({ ok: true });
+      return false;
+    }
+
     return false;
   },
 );

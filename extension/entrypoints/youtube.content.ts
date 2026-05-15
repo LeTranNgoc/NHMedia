@@ -10,6 +10,7 @@ import type {
   SwSettingsBroadcastMsg,
 } from '../src/shared/messaging-types';
 import overlayStyles from '../src/content/youtube/overlay-styles.css?raw';
+import { startCcSession, stopCcSession } from '../src/content-scripts/cc-session-manager';
 
 export default defineContentScript({
   matches: ['*://*.youtube.com/*'],
@@ -48,12 +49,13 @@ export default defineContentScript({
     }
 
     // ── Sync ducking when video element becomes available ─────────────────
-    // Poll for video element attachment so ducking-manager stays in sync.
-    // VideoController already tracks the element; we just observe it changing.
     const duckingInterval = setInterval(() => {
       const video = videoCtrl.videoElement;
       if (video) duckingMgr.attach(video);
     }, 500);
+
+    // ── CC session state ─────────────────────────────────────────────────
+    let ccActive = false;
 
     // ── Inbound SW messages ───────────────────────────────────────────────
     chrome.runtime.onMessage.addListener(
@@ -66,16 +68,43 @@ export default defineContentScript({
 
           case 'sw.status.badge': {
             statusBadge.update(msg.status, msg.enabled);
+
+            if (msg.enabled && !ccActive) {
+              // Pipeline just started — attempt CC subtitle path.
+              ccActive = true;
+              const video = videoCtrl.videoElement;
+              void (async () => {
+                try {
+                  const settings = await loadSettings();
+                  const started = await startCcSession({
+                    html: document.documentElement.outerHTML,
+                    video: video ?? undefined,
+                    srcLang: settings.srcLanguage,
+                    targetLang: settings.targetLanguage,
+                    useAutoCC: settings.useAutoCC,
+                  });
+                  if (!started) {
+                    // No suitable CC track — ASR pipeline handles it; nothing to do.
+                    ccActive = false;
+                  }
+                } catch (err) {
+                  console.warn('[youtube.content] CC session start failed, falling back to ASR:', err);
+                  ccActive = false;
+                }
+              })();
+            } else if (!msg.enabled && ccActive) {
+              // Pipeline stopped.
+              ccActive = false;
+              stopCcSession();
+            }
             break;
           }
 
           case 'sw.settings.broadcast': {
             const s = msg.settings;
-            // Apply subtitle visibility
             if (s.subtitle) subtitleOverlay.enable();
             else subtitleOverlay.disable();
 
-            // Apply ducking live (no pipeline restart)
             const video = videoCtrl.videoElement;
             if (video) {
               duckingMgr.attach(video);
@@ -98,6 +127,7 @@ export default defineContentScript({
     // ── Cleanup on unload ─────────────────────────────────────────────────
     window.addEventListener('beforeunload', () => {
       clearInterval(duckingInterval);
+      stopCcSession();
       duckingMgr.detach();
       videoCtrl.destroy();
       subtitleOverlay.unmount();
