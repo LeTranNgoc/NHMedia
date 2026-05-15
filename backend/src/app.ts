@@ -39,6 +39,9 @@ export interface AppEnv {
   POLAR_PRODUCT_ID_PRO?: string;
   POLAR_PRO_CHECKOUT_URL?: string;
   POLAR_SERVER?: 'sandbox' | 'production';
+  FREE_TIER_LIMIT_SECONDS?: number;
+  FREE_TIER_LIMIT_TRANSLATE_CHARS?: number;
+  FREE_TIER_LIMIT_TTS_CHARS?: number;
 }
 
 export interface BuildAppOptions {
@@ -119,7 +122,13 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
   const emailRateLimiter =
     overrides?.emailRateLimiter ?? new EmailRateLimiter(5, 60 * 60 * 1000);
 
-  const usageTracker = overrides?.usageTracker ?? new UsageTracker(db);
+  const usageTracker =
+    overrides?.usageTracker ??
+    new UsageTracker(db, {
+      seconds: env.FREE_TIER_LIMIT_SECONDS,
+      translateChars: env.FREE_TIER_LIMIT_TRANSLATE_CHARS,
+      ttsChars: env.FREE_TIER_LIMIT_TTS_CHARS,
+    });
 
   const polarClient =
     overrides?.polarClient ??

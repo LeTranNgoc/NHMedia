@@ -91,5 +91,5 @@ export type WsCloseCode = (typeof WS_CLOSE_CODES)[keyof typeof WS_CLOSE_CODES];
 
 // ── Allowed source languages ───────────────────────────────────────────────────
 
-export const ALLOWED_SRC_LANGS = ['en', 'ja', 'ko', 'fr', 'de'] as const;
+export const ALLOWED_SRC_LANGS = ['en', 'ja', 'ko', 'fr', 'de', 'hi', 'zh-Hans'] as const;
 export type AllowedSrcLang = (typeof ALLOWED_SRC_LANGS)[number];

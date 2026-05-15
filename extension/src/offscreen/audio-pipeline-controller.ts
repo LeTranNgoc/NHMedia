@@ -233,7 +233,8 @@ export class AudioPipelineController {
       return;
     }
 
-    const speech = await this.vad!.isSpeech(chunk);
+    if (!this.vad) return; // subtitle mode or pre-init — should not reach here
+    const speech = await this.vad.isSpeech(chunk);
     if (speech) {
       this.stats.speech++;
       this.ws?.sendAudio(chunk);

@@ -25,8 +25,10 @@ export interface CaptionFetchErrorReply {
   error: string;
 }
 
-/** Allowlisted origin — only fetch from YouTube timedtext endpoints. */
-const ALLOWED_ORIGIN_RE = /^https:\/\/([a-z0-9-]+\.)*youtube\.com\//;
+/** Allowlisted endpoint — only the YouTube timedtext API.
+ *  Tighter than a subdomain match: prevents the SW from being coerced into
+ *  fetching arbitrary YouTube URLs with credentials (cookie exfil risk). */
+const ALLOWED_URL_RE = /^https:\/\/(www\.)?youtube\.com\/api\/timedtext\?/;
 
 export function registerCaptionFetcher(): void {
   chrome.runtime.onMessage.addListener(
@@ -37,9 +39,9 @@ export function registerCaptionFetcher(): void {
     ): boolean | undefined => {
       if (!isCaptionFetchMsg(msg)) return undefined;
 
-      // Security: only allow fetching from youtube.com
-      if (!ALLOWED_ORIGIN_RE.test(msg.baseUrl)) {
-        sendResponse({ ok: false, error: 'Origin not allowed' });
+      // Security: only allow the YouTube timedtext endpoint.
+      if (!ALLOWED_URL_RE.test(msg.baseUrl)) {
+        sendResponse({ ok: false, error: 'Endpoint not allowed' });
         return false;
       }
 

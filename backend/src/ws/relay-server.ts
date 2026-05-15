@@ -184,6 +184,12 @@ export async function registerRelayServer(
         if (socket.readyState === socket.OPEN) {
           socket.send(JSON.stringify(frame));
         }
+        // C3: suppress orchestrator feed while caption frames are flowing —
+        // prevents the same segment being translated + billed twice when both
+        // ASR audio AND CC subtitles are active in the same WS session.
+        if (Date.now() - lastCaptionFrameAt < CAPTION_ACTIVE_WINDOW_MS) {
+          return;
+        }
         // Feed transcript into the pipeline orchestrator
         orchestrator?.onTranscript(t);
       });
@@ -225,6 +231,14 @@ export async function registerRelayServer(
       });
 
       let asrStarted = false;
+      // Captured from the most recent config frame so `flush` restarts ASR
+      // with the user's chosen language, not a default.
+      let currentSrcLang: string = 'en';
+      // C3 defense: when a caption frame arrives within the last 5s, the CC
+      // path is considered active and ASR transcripts are suppressed to
+      // prevent the orchestrator from translating the same segment twice.
+      let lastCaptionFrameAt = 0;
+      const CAPTION_ACTIVE_WINDOW_MS = 5000;
 
       // ── 6. Message handler ──────────────────────────────────────────────────
       let _firstMsgLogged = false;
@@ -279,6 +293,8 @@ export async function registerRelayServer(
             return;
           }
 
+          currentSrcLang = srcLang;
+
           // Defer asrStarted=true until Deepgram socket is actually OPEN.
           // Setting it true before start() resolves caused audio frames to be
           // forwarded to a CONNECTING socket → SDK threw "Socket is not open"
@@ -289,10 +305,19 @@ export async function registerRelayServer(
               asrStarted = true;
             })
             .catch((err: unknown) => {
-              app.log.error(
-                { userId, sessionId, err: err instanceof Error ? err.message : String(err) },
-                'ASR start failed',
-              );
+              const msg = err instanceof Error ? err.message : String(err);
+              app.log.error({ userId, sessionId, err: msg }, 'ASR start failed');
+              // I2: notify client + close the socket so the UI exits the
+              // "capturing" state instead of stalling forever.
+              if (socket.readyState === socket.OPEN) {
+                const errFrame: ServerControlFrame = {
+                  type: 'error',
+                  code: 'asr_start_failed',
+                  message: msg,
+                };
+                socket.send(JSON.stringify(errFrame));
+                socket.close(1011, 'asr_start_failed');
+              }
             });
 
           // Instantiate per-session pipeline orchestrator
@@ -326,12 +351,10 @@ export async function registerRelayServer(
         }
 
         if (frame.type === 'flush') {
-          // Finalize current ASR segment: stop + restart
+          // Finalize current ASR segment: stop + restart with the user's
+          // chosen source language (captured at config-frame time).
           void asr.stop().then(async () => {
             if (asrStarted && sessionManager.hasSession(userId)) {
-              const session = sessionManager.get(userId);
-              const currentSrcLang =
-                (session as { _lastSrcLang?: string })?._lastSrcLang ?? 'en';
               await asr.start({ srcLang: currentSrcLang, sampleRate: 16000 });
               bp.reset();
             }
@@ -342,6 +365,7 @@ export async function registerRelayServer(
         if (frame.type === 'caption') {
           // Subtitle-first path: bypass ASR, push text directly to orchestrator.
           // No bp.frameSent() — this is not an audio chunk.
+          lastCaptionFrameAt = Date.now(); // C3: arm ASR-forward suppression
           app.log.info({ userId, sessionId, ts: frame.ts }, 'caption frame received');
           orchestrator?.onTranscript({
             text: frame.text,

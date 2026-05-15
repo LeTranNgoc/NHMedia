@@ -4,17 +4,16 @@
  * Encapsulates the lifecycle of a single subtitle-path session:
  *   1. Extract CC tracks from page HTML
  *   2. Pick best track per user settings
- *   3. Fetch events via SW relay (caption.fetch)
- *   4. Start native cue listener on the video element
- *   5. Forward each cue as caption.chunk to SW
- *   6. Notify SW via caption.active so pipeline.status includes ccSource
+ *   3. Start native cue listener on the <video> element (video.textTracks)
+ *   4. Forward each cue as caption.chunk to SW
+ *   5. Notify SW via caption.active so pipeline.status includes ccSource
  *
  * Returns true if a CC track was found and the session started.
  * Returns false to signal the caller to fall back to ASR.
  *
  * Constraints:
  *   - Only one session at a time (module-level singleton).
- *   - Does NOT modify cc-reader or caption-fetcher modules.
+ *   - Does NOT modify cc-reader.
  */
 
 import {
@@ -22,7 +21,6 @@ import {
   pickTrack,
   startCueListener,
 } from './youtube-cc-reader';
-import type { CaptionFetchMsg, CaptionFetchReply, CaptionFetchErrorReply } from '../background/caption-fetcher';
 import type { ContentCaptionChunkMsg, ContentCaptionActiveMsg } from '../shared/messaging-types';
 
 export interface CcSessionOpts {
@@ -59,29 +57,10 @@ export async function startCcSession(opts: CcSessionOpts): Promise<boolean> {
     return false;
   }
 
-  // Determine whether YouTube should auto-translate (tlang param).
-  // Only pass tlang when target differs from the track's actual language.
-  const tlang = targetLang !== track.languageCode ? targetLang : undefined;
-
-  // Fetch caption events via SW relay (CORS bypass).
-  const fetchMsg: CaptionFetchMsg = {
-    type: 'caption.fetch',
-    baseUrl: track.baseUrl,
-    tlang,
-  };
-
-  let reply: CaptionFetchReply | CaptionFetchErrorReply;
-  try {
-    reply = await chrome.runtime.sendMessage(fetchMsg) as CaptionFetchReply | CaptionFetchErrorReply;
-  } catch (err) {
-    console.warn('[cc-session-manager] caption.fetch failed:', err);
-    return false;
-  }
-
-  if (!reply.ok) {
-    console.warn('[cc-session-manager] caption.fetch error:', reply.error);
-    return false;
-  }
+  // Actual subtitle source is video.textTracks (cue listener). The earlier
+  // caption.fetch over a SW relay was a no-op — its `events[]` was never
+  // consumed. Dropped to save 50-500KB/video and remove `credentials:'include'`
+  // attack surface on the SW relay.
 
   // Locate the video element — may not be available yet, startCueListener handles polling.
   const videoEl = video ?? (document.querySelector<HTMLVideoElement>('video') ?? undefined);

@@ -10,8 +10,14 @@ async function main(): Promise<void> {
   const env = loadEnv();
   const db = await connectMongo(env.MONGO_URI);
 
-  // UsageTracker created here so the shutdown handler can stop its interval
-  const usageTracker = new UsageTracker(db);
+  // UsageTracker created here so the shutdown handler can stop its interval.
+  // Pass env-derived limits explicitly — buildApp's fallback path is only used
+  // when no override is supplied, so prod must wire limits at construction.
+  const usageTracker = new UsageTracker(db, {
+    seconds: env.FREE_TIER_LIMIT_SECONDS,
+    translateChars: env.FREE_TIER_LIMIT_TRANSLATE_CHARS,
+    ttsChars: env.FREE_TIER_LIMIT_TTS_CHARS,
+  });
 
   const app = await buildApp({ db, env, overrides: { usageTracker } });
 

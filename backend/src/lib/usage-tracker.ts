@@ -6,14 +6,18 @@ import { SubscriptionService } from '../billing/subscription-service.js';
 const MAX_IN_MEMORY_SECONDS = 3600;
 const MAX_IN_MEMORY_CHARS = 200_000;
 
-/** Daily free tier cap in seconds. Prod: 900 (15 min). Dev: 36000 (10h). */
-export const FREE_TIER_LIMIT_SECONDS = 36000;
+/** Fallback defaults — used only when caller does not inject limits via constructor.
+ *  Prod deploys MUST pass env values through to UsageTracker so `FREE_TIER_LIMIT_SECONDS=900`
+ *  in .env actually takes effect (was the C1 regression). */
+const DEFAULT_FREE_TIER_LIMIT_SECONDS = 36000;
+const DEFAULT_FREE_TIER_LIMIT_TRANSLATE_CHARS = 50000;
+const DEFAULT_FREE_TIER_LIMIT_TTS_CHARS = 50000;
 
-/** Daily free tier cap for translated characters. Default: 50000. */
-export const FREE_TIER_LIMIT_TRANSLATE_CHARS = 50000;
-
-/** Daily free tier cap for TTS characters. Default: 50000. */
-export const FREE_TIER_LIMIT_TTS_CHARS = 50000;
+/** @deprecated Pass env-derived limits to UsageTracker constructor instead.
+ *  Kept as a re-export so legacy callers compile while migrating. */
+export const FREE_TIER_LIMIT_SECONDS = DEFAULT_FREE_TIER_LIMIT_SECONDS;
+export const FREE_TIER_LIMIT_TRANSLATE_CHARS = DEFAULT_FREE_TIER_LIMIT_TRANSLATE_CHARS;
+export const FREE_TIER_LIMIT_TTS_CHARS = DEFAULT_FREE_TIER_LIMIT_TTS_CHARS;
 
 export type UsageKind = 'seconds' | 'translateChars' | 'ttsChars';
 
@@ -40,12 +44,25 @@ interface PendingEntry {
   ttsChars: number;
 }
 
+export interface UsageTrackerLimits {
+  seconds?: number;
+  translateChars?: number;
+  ttsChars?: number;
+}
+
 export class UsageTracker {
   /** userId → per-kind pending delta since last flush */
   private readonly pending = new Map<string, PendingEntry>();
   private flushTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly freeTierLimits: UsageLimits;
 
-  constructor(private readonly db: Db) {}
+  constructor(private readonly db: Db, limits: UsageTrackerLimits = {}) {
+    this.freeTierLimits = {
+      seconds: limits.seconds ?? DEFAULT_FREE_TIER_LIMIT_SECONDS,
+      translateChars: limits.translateChars ?? DEFAULT_FREE_TIER_LIMIT_TRANSLATE_CHARS,
+      ttsChars: limits.ttsChars ?? DEFAULT_FREE_TIER_LIMIT_TTS_CHARS,
+    };
+  }
 
   /**
    * Accumulate usage for `userId`.
@@ -201,11 +218,7 @@ export class UsageTracker {
     if (tier === 'pro') {
       return { seconds: null, translateChars: null, ttsChars: null };
     }
-    return {
-      seconds: FREE_TIER_LIMIT_SECONDS,
-      translateChars: FREE_TIER_LIMIT_TRANSLATE_CHARS,
-      ttsChars: FREE_TIER_LIMIT_TTS_CHARS,
-    };
+    return this.freeTierLimits;
   }
 
   /**

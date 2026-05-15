@@ -32,6 +32,8 @@ const envSchema = z.object({
   TRANSLATE_PROVIDER: z.enum(['gemini', 'azure']).optional().default('azure'),
   AZURE_SPEECH_KEY: z.string().optional().default(''),
   AZURE_SPEECH_REGION: z.string().optional().default('southeastasia'),
+  /** Daily free-tier cap in seconds of audio captured. Prod: 900 (15m), Dev: 36000 (10h). */
+  FREE_TIER_LIMIT_SECONDS: z.coerce.number().default(36000),
   FREE_TIER_LIMIT_TRANSLATE_CHARS: z.coerce.number().default(50000),
   FREE_TIER_LIMIT_TTS_CHARS: z.coerce.number().default(50000),
 });

@@ -111,8 +111,9 @@ export class PipelineOrchestrator {
       }
 
       this.cache.set(srcText, this.srcLang, translatedText);
-      // Fire usage callback for non-cached translations only
-      this.onTranslateComplete?.(translatedText.length);
+      // Bill on INPUT chars to match Azure Translator / Cloud Translate pricing.
+      // Cached translations are skipped (deduplication).
+      this.onTranslateComplete?.(srcText.length);
     }
 
     // ── Emit translation subtitle frame ─────────────────────────────────────

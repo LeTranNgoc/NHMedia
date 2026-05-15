@@ -3,8 +3,9 @@
  * Extracts track metadata from ytInitialPlayerResponse and provides
  * a track picker + native cuechange listener.
  *
- * CORS constraint: content script cannot fetch timedtext directly.
- * Use caption-fetcher.ts (SW relay) to fetch the events[] array.
+ * Subtitle source is video.textTracks (the browser's own decoded cues).
+ * No direct timedtext fetch — keeps the content script CORS-free and
+ * avoids needing credentialed network access for captions.
  */
 
 export interface CcTrack {

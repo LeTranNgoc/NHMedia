@@ -81,6 +81,13 @@ export class PolarClient {
       throw new Error('POLAR_PRO_CHECKOUT_URL is not configured');
     }
     const url = new URL(this.proCheckoutUrl);
+    // Defense: env could be misconfigured to a hostile URL — would leak userId
+    // via customer_external_id query param. Match createCheckoutSession's check.
+    if (!url.hostname.endsWith('.polar.sh') && url.hostname !== 'polar.sh') {
+      throw new Error(
+        `POLAR_PRO_CHECKOUT_URL has unexpected host '${url.hostname}' — expected *.polar.sh`,
+      );
+    }
     url.searchParams.set('customer_external_id', userId);
     url.searchParams.set('customer_email', email);
     return url.toString();
