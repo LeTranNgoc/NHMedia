@@ -5,7 +5,12 @@ import { MongoClient, Db, ObjectId } from 'mongodb';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../app.js';
 import { JwtService } from '../auth/jwt-service.js';
-import { UsageTracker } from '../lib/usage-tracker.js';
+import {
+  UsageTracker,
+  FREE_TIER_LIMIT_SECONDS,
+  FREE_TIER_LIMIT_TRANSLATE_CHARS,
+  FREE_TIER_LIMIT_TTS_CHARS,
+} from '../lib/usage-tracker.js';
 import { subscriptionCollection } from '../db/models/subscription.js';
 import type { PolarClient } from '../billing/polar-client.js';
 
@@ -37,6 +42,9 @@ let usageTracker: UsageTracker;
 
 const mockPolarClient: PolarClient = {
   createCheckoutSession: vi.fn().mockResolvedValue({ url: 'https://polar.sh/checkout/test123' }),
+  getCheckoutUrl: vi.fn().mockImplementation((userId: string, email: string) =>
+    `https://buy.polar.sh/test-product?customer_external_id=${userId}&customer_email=${encodeURIComponent(email)}`,
+  ),
   getSubscription: vi.fn().mockResolvedValue({}),
 } as unknown as PolarClient;
 
@@ -110,12 +118,26 @@ describe('GET /billing/me', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json<{
       tier: string;
-      usageToday: { secondsCaptured: number; limitSeconds: number; percentUsed: number };
+      usageToday: {
+        secondsCaptured: number;
+        limitSeconds: number;
+        percentUsed: number;
+        translateChars: number;
+        ttsChars: number;
+      };
+      limits: { seconds: number; translateChars: number; ttsChars: number };
     }>();
     expect(body.tier).toBe('free');
+    // Legacy fields
     expect(body.usageToday.secondsCaptured).toBe(0);
-    expect(body.usageToday.limitSeconds).toBe(900);
+    expect(body.usageToday.limitSeconds).toBe(FREE_TIER_LIMIT_SECONDS);
     expect(body.usageToday.percentUsed).toBe(0);
+    // New fields
+    expect(body.usageToday.translateChars).toBe(0);
+    expect(body.usageToday.ttsChars).toBe(0);
+    expect(body.limits.seconds).toBe(FREE_TIER_LIMIT_SECONDS);
+    expect(body.limits.translateChars).toBe(FREE_TIER_LIMIT_TRANSLATE_CHARS);
+    expect(body.limits.ttsChars).toBe(FREE_TIER_LIMIT_TTS_CHARS);
   });
 
   it('returns pro tier for user with active subscription', async () => {
@@ -141,10 +163,17 @@ describe('GET /billing/me', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    const body = res.json<{ tier: string; usageToday: { limitSeconds: null; percentUsed: null } }>();
+    const body = res.json<{
+      tier: string;
+      usageToday: { limitSeconds: null; percentUsed: null };
+      limits: { seconds: null; translateChars: null; ttsChars: null };
+    }>();
     expect(body.tier).toBe('pro');
     expect(body.usageToday.limitSeconds).toBeNull();
     expect(body.usageToday.percentUsed).toBeNull();
+    expect(body.limits.seconds).toBeNull();
+    expect(body.limits.translateChars).toBeNull();
+    expect(body.limits.ttsChars).toBeNull();
   });
 });
 
@@ -277,6 +306,53 @@ describe('POST /billing/webhook', () => {
     });
     expect(doc?.status).toBe('active');
     expect(doc?.tier).toBe('pro');
+  });
+});
+
+// ── GET /billing/checkout-url ────────────────────────────────────────────────
+
+describe('GET /billing/checkout-url', () => {
+  it('returns 401 without auth', async () => {
+    const res = await app.inject({ method: 'GET', url: '/billing/checkout-url' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('returns 200 with url containing userId and email query params for authenticated user', async () => {
+    const userId = new ObjectId().toString();
+    const email = 'upgrade@example.com';
+    const token = await jwtService.sign({ userId, email });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/billing/checkout-url',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ url: string }>();
+    expect(typeof body.url).toBe('string');
+    expect(body.url).toContain(`customer_external_id=${userId}`);
+    expect(body.url).toContain(`customer_email=${encodeURIComponent(email)}`);
+    expect(mockPolarClient.getCheckoutUrl).toHaveBeenCalledWith(userId, email);
+  });
+
+  it('returns 503 when getCheckoutUrl throws (not configured)', async () => {
+    vi.mocked(mockPolarClient.getCheckoutUrl).mockImplementationOnce(() => {
+      throw new Error('POLAR_PRO_CHECKOUT_URL is not configured');
+    });
+
+    const userId = new ObjectId().toString();
+    const token = await jwtService.sign({ userId, email: 'noconfig@example.com' });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/billing/checkout-url',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(res.statusCode).toBe(503);
+    const body = res.json<{ code: string; message: string }>();
+    expect(body.code).toBe('CHECKOUT_NOT_CONFIGURED');
   });
 });
 

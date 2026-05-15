@@ -116,14 +116,16 @@ describe('DeepgramNova2Provider', () => {
     });
   });
 
-  it('onTranscript not called for Metadata events', async () => {
+  it('onTranscript called with empty heartbeat for Metadata events (drains BP)', async () => {
     await provider.start({ srcLang: 'en', sampleRate: 16000 });
 
     const cb = vi.fn();
     provider.onTranscript(cb);
 
     mockSocket._emit('message', { type: 'Metadata', request_id: 'abc' });
-    expect(cb).not.toHaveBeenCalled();
+    // Heartbeat: empty text, non-final. Relay uses it to ACK backpressure but
+    // skips client-forward + orchestrator dispatch.
+    expect(cb).toHaveBeenCalledWith({ text: '', isFinal: false, ts: 0 });
   });
 
   it('stop() sends CloseStream and closes socket', async () => {

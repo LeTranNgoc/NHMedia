@@ -353,17 +353,71 @@ describe('WS backpressure', () => {
       }
     });
 
-    // Send > 5 frames without any acknowledgement
-    for (let i = 0; i < 8; i++) {
+    // Send > maxFramesInFlight (100) without any acknowledgement to trigger BP
+    for (let i = 0; i < 1005; i++) {
       ws.send(Buffer.alloc(3200));
     }
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 300));
 
     const hasWarning = messages.some(
       (m) => (m as { type: string; code: string }).type === 'warning' &&
              (m as { type: string; code: string }).code === 'backpressure',
     );
     expect(hasWarning).toBe(true);
+
+    ws.close();
+    await waitForClose(ws).catch(() => {
+      // ignore
+    });
+  });
+
+  // Regression test: empty interim transcripts must still ACK backpressure.
+  // Without this, the BP counter never drained during cold-start silence and
+  // every audio chunk past the first 5 was dropped forever — making TTS
+  // completely silent in production.
+  it('empty interim transcripts drain backpressure counter', async () => {
+    const token = await jwtService.sign({ userId: 'user-bp-drain', email: 'bp@test.com' });
+    const url = `ws://127.0.0.1:${serverPort}/ws/translate?token=${token}&srcLang=en`;
+
+    const ws = await connectWs(url);
+    ws.send(JSON.stringify({ type: 'config', srcLang: 'en', audioMode: 'voice-over' }));
+    await new Promise((r) => setTimeout(r, 100));
+
+    const messages: unknown[] = [];
+    ws.on('message', (data) => {
+      try {
+        messages.push(JSON.parse(data.toString()));
+      } catch {
+        // ignore
+      }
+    });
+
+    // Saturate BP: send > maxFramesInFlight (100) without ACK
+    for (let i = 0; i < 1005; i++) {
+      ws.send(Buffer.alloc(3200));
+    }
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Fire 105 empty interim transcripts — these MUST ACK the BP counter
+    for (let i = 0; i < 1005; i++) {
+      mockTranscriptCb?.({ text: '', isFinal: false, ts: i * 100 });
+    }
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Empty interims must not be forwarded to client as transcript frames
+    const transcriptFrames = messages.filter(
+      (m) => (m as { type: string }).type === 'transcript',
+    );
+    expect(transcriptFrames).toHaveLength(0);
+
+    // BP should now be drained (counter = 0 from 8 empty-interim ACKs).
+    // Send a single audio frame — it must be forwarded, not dropped.
+    const callsBefore = (mockAsrProvider.sendAudio as ReturnType<typeof vi.fn>).mock.calls.length;
+    ws.send(Buffer.alloc(3200));
+    await new Promise((r) => setTimeout(r, 150));
+    const callsAfter = (mockAsrProvider.sendAudio as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    expect(callsAfter).toBeGreaterThan(callsBefore); // frame forwarded, BP drained
 
     ws.close();
     await waitForClose(ws).catch(() => {

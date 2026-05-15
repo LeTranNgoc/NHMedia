@@ -1,9 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { MongoClient, Db, ObjectId } from 'mongodb';
-import { UsageTracker, utcDateString, FREE_TIER_LIMIT_SECONDS } from '../lib/usage-tracker.js';
+import {
+  UsageTracker,
+  utcDateString,
+  FREE_TIER_LIMIT_SECONDS,
+  FREE_TIER_LIMIT_TRANSLATE_CHARS,
+  FREE_TIER_LIMIT_TTS_CHARS,
+} from '../lib/usage-tracker.js';
 import { usageLogCollection } from '../db/models/usage-log.js';
 import { subscriptionCollection } from '../db/models/subscription.js';
+import { checkUsageGate } from '../middleware/usage-gate-middleware.js';
 
 let mongod: MongoMemoryServer;
 let client: MongoClient;
@@ -98,23 +105,15 @@ describe('UsageTracker.flush', () => {
 });
 
 describe('UsageTracker.getToday', () => {
-  it('returns 0 for new user with no DB record', async () => {
+  it('returns zeros for new user with no DB record', async () => {
     const userId = new ObjectId().toString();
     const result = await tracker.getToday(userId);
-    expect(result).toBe(0);
+    expect(result).toEqual({ seconds: 0, translateChars: 0, ttsChars: 0 });
   });
 
-  it('returns DB value + in-memory pending combined', async () => {
+  it('returns DB seconds + in-memory pending combined', async () => {
     const userId = new ObjectId().toString();
     const userObjId = new ObjectId(userId);
-
-    // Pre-seed DB with 500s
-    await usageLogCollection(db).insertOne({
-      userId: userObjId,
-      date: utcDateString(),
-      secondsCaptured: 500,
-      createdAt: new Date(),
-    } as Parameters<typeof usageLogCollection>[0] extends Db ? never : never);
 
     // Use updateOne to insert properly
     await db.collection('usage_log').updateOne(
@@ -127,7 +126,9 @@ describe('UsageTracker.getToday', () => {
     tracker.tick(userId, 60);
 
     const result = await tracker.getToday(userId);
-    expect(result).toBe(560);
+    expect(result.seconds).toBe(560);
+    expect(result.translateChars).toBe(0);
+    expect(result.ttsChars).toBe(0);
   });
 
   it('returns only DB value when no pending ticks', async () => {
@@ -141,7 +142,7 @@ describe('UsageTracker.getToday', () => {
     );
 
     const result = await tracker.getToday(userId);
-    expect(result).toBe(300);
+    expect(result.seconds).toBe(300);
   });
 });
 
@@ -216,13 +217,19 @@ describe('UsageTracker.getTier', () => {
 });
 
 describe('UsageTracker.getLimit', () => {
-  it('returns 900 for free tier', () => {
-    expect(tracker.getLimit('free')).toBe(FREE_TIER_LIMIT_SECONDS);
-    expect(tracker.getLimit('free')).toBe(900);
+  it('returns all three caps for free tier', () => {
+    const limits = tracker.getLimit('free');
+    expect(limits.seconds).toBe(FREE_TIER_LIMIT_SECONDS);
+    // FREE_TIER_LIMIT_SECONDS is dev-overridden to 36000 (10h). Must revert to 900 before prod deploy.
+    expect(limits.translateChars).toBe(FREE_TIER_LIMIT_TRANSLATE_CHARS);
+    expect(limits.ttsChars).toBe(FREE_TIER_LIMIT_TTS_CHARS);
   });
 
-  it('returns null for pro tier (unlimited)', () => {
-    expect(tracker.getLimit('pro')).toBeNull();
+  it('returns all-null limits for pro tier (unlimited)', () => {
+    const limits = tracker.getLimit('pro');
+    expect(limits.seconds).toBeNull();
+    expect(limits.translateChars).toBeNull();
+    expect(limits.ttsChars).toBeNull();
   });
 });
 
@@ -309,5 +316,104 @@ describe('UsageTracker.getTier — sort correctness (upgrade→cancel→resub)',
 
     const tier = await tracker.getTier(userId);
     expect(tier).toBe('free');
+  });
+});
+
+// ── New multi-kind tests ──────────────────────────────────────────────────────
+
+describe('UsageTracker.tick — kind isolation', () => {
+  it('tick by translateChars kind isolates from other kinds', async () => {
+    const userId = new ObjectId().toString();
+    tracker.tick(userId, 100, 'translateChars');
+    const result = await tracker.getToday(userId);
+    expect(result).toEqual({ seconds: 0, translateChars: 100, ttsChars: 0 });
+  });
+
+  it('tick same kind twice accumulates', async () => {
+    const userId = new ObjectId().toString();
+    tracker.tick(userId, 40, 'ttsChars');
+    tracker.tick(userId, 60, 'ttsChars');
+    const result = await tracker.getToday(userId);
+    expect(result.ttsChars).toBe(100);
+    expect(result.seconds).toBe(0);
+    expect(result.translateChars).toBe(0);
+  });
+});
+
+describe('UsageTracker.getLimit — multi-kind', () => {
+  it('getLimit(free) returns all three caps', () => {
+    const limits = tracker.getLimit('free');
+    expect(limits).toEqual({
+      seconds: FREE_TIER_LIMIT_SECONDS,
+      translateChars: FREE_TIER_LIMIT_TRANSLATE_CHARS,
+      ttsChars: FREE_TIER_LIMIT_TTS_CHARS,
+    });
+  });
+
+  it('getLimit(pro) returns all-null limits', () => {
+    const limits = tracker.getLimit('pro');
+    expect(limits).toEqual({ seconds: null, translateChars: null, ttsChars: null });
+  });
+});
+
+describe('checkUsageGate — multi-kind', () => {
+  it('returns allowed=false + kindExceeded=[translateChars] when translate cap exceeded', async () => {
+    const userId = new ObjectId().toString();
+    const userObjId = new ObjectId(userId);
+
+    // Seed DB with translateCharsToday > FREE_TIER_LIMIT_TRANSLATE_CHARS
+    await db.collection('usage_log').updateOne(
+      { userId: userObjId, date: utcDateString() },
+      {
+        $set: {
+          secondsCaptured: 0,
+          translateCharsToday: FREE_TIER_LIMIT_TRANSLATE_CHARS + 1,
+          ttsCharsToday: 0,
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true },
+    );
+
+    const result = await checkUsageGate(userId, tracker);
+    expect(result.allowed).toBe(false);
+    expect(result.kindExceeded).toContain('translateChars');
+    expect(result.reason).toBe('quota_exceeded');
+  });
+
+  it('Pro tier always allowed regardless of usage', async () => {
+    const userId = new ObjectId().toString();
+    const userObjId = new ObjectId(userId);
+
+    // Give user an active subscription
+    await subscriptionCollection(db).insertOne({
+      _id: new ObjectId(),
+      userId: userObjId,
+      polarSubscriptionId: 'sub_gate_pro_test',
+      tier: 'pro',
+      status: 'active',
+      startedAt: new Date(),
+      endsAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Seed excessive usage — should not matter for pro
+    await db.collection('usage_log').updateOne(
+      { userId: userObjId, date: utcDateString() },
+      {
+        $set: {
+          secondsCaptured: 999999,
+          translateCharsToday: 999999,
+          ttsCharsToday: 999999,
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true },
+    );
+
+    const result = await checkUsageGate(userId, tracker);
+    expect(result.allowed).toBe(true);
+    expect(result.kindExceeded).toBeUndefined();
   });
 });

@@ -1,10 +1,16 @@
 import { TextToSpeechClient } from '@google-cloud/text-to-speech';
 import type { TTSProvider, TtsVoiceOptions, TtsSynthesisResult } from './tts-provider-interface.js';
+import { pickVoice } from './voice-mapping.js';
 
-// Voice name mapping: Neural2 vi-VN voices
-const VOICE_MAP: Record<'male' | 'female', string> = {
-  female: 'vi-VN-Neural2-A',
-  male: 'vi-VN-Neural2-D',
+/** BCP-47 short code → full locale tag used by Cloud TTS. */
+const LANG_TO_LOCALE: Record<string, string> = {
+  vi: 'vi-VN',
+  en: 'en-US',
+  ko: 'ko-KR',
+  ja: 'ja-JP',
+  fr: 'fr-FR',
+  de: 'de-DE',
+  'zh-Hans': 'zh-CN',
 };
 
 export interface GoogleCloudTtsProviderOptions {
@@ -22,12 +28,19 @@ export class GoogleCloudTtsProvider implements TTSProvider {
   }
 
   async synthesize(text: string, voice: TtsVoiceOptions): Promise<TtsSynthesisResult> {
-    const voiceName = VOICE_MAP[voice.gender];
+    const voiceName = pickVoice(voice.lang, voice.gender, 'cloud');
+    if (!voiceName) {
+      const err = new Error('UNSUPPORTED_LANG') as Error & { code: string };
+      err.code = 'UNSUPPORTED_LANG';
+      throw err;
+    }
+
+    const locale = LANG_TO_LOCALE[voice.lang] ?? voice.lang;
 
     const [response] = await this.client.synthesizeSpeech({
       input: { text },
       voice: {
-        languageCode: 'vi-VN',
+        languageCode: locale,
         name: voiceName,
         ssmlGender: voice.gender === 'female' ? 'FEMALE' : 'MALE',
       },

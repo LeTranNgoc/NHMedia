@@ -3,8 +3,10 @@
  * GoogleCloudTtsProvider is the sole implementation for MVP.
  * ElevenLabs / FPT.AI can swap in later without touching the pipeline layer.
  */
+export type SupportedLang = 'vi' | 'en' | 'ko' | 'ja' | 'fr' | 'de' | 'hi' | 'zh-Hans';
+
 export interface TtsVoiceOptions {
-  lang: 'vi';
+  lang: SupportedLang;
   gender: 'male' | 'female';
 }
 

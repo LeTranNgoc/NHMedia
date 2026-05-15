@@ -9,7 +9,13 @@ import { BackpressureMonitor } from './backpressure-monitor.js';
 import { emitLifecycleEvent } from './connection-lifecycle.js';
 import { DeepgramNova2Provider } from '../providers/asr/deepgram-nova2-provider.js';
 import { GeminiFlashProvider } from '../providers/translate/gemini-flash-provider.js';
+import { AzureTranslateProvider } from '../providers/translate/azure-translate-provider.js';
 import { GoogleCloudTtsProvider } from '../providers/tts/google-cloud-tts-provider.js';
+import { AzureTtsProvider } from '../providers/tts/azure-tts-provider.js';
+import { TtsProviderChain } from '../providers/tts/tts-provider-chain.js';
+import type { TranslateProvider } from '../providers/translate/translate-provider-interface.js';
+import type { TTSProvider } from '../providers/tts/tts-provider-interface.js';
+import type { Env } from '../config/env.js';
 import { PipelineOrchestrator } from '../pipeline/pipeline-orchestrator.js';
 import { WS_CLOSE_CODES, ALLOWED_SRC_LANGS } from '@translate-voice/shared';
 import type { ServerControlFrame } from '@translate-voice/shared';
@@ -25,16 +31,28 @@ export interface RelayServerOptions {
   jwtService: JwtService;
   deepgramApiKey: string;
   geminiApiKey?: string;
+  azureTranslatorKey?: string;
+  translateProvider?: 'gemini' | 'azure';
   googleCloudTtsKeyFile?: string;
+  azureSpeechKey?: string;
+  azureSpeechRegion?: string;
   /** UsageTracker instance — required for usage gate + mid-stream tick */
   usageTracker?: UsageTracker;
+}
+
+/** Choose translate provider based on env config. Falls back to Gemini when Azure key absent. */
+export function pickTranslateProvider(env: Pick<Env, 'TRANSLATE_PROVIDER' | 'AZURE_TRANSLATOR_KEY' | 'GEMINI_API_KEY'>): TranslateProvider {
+  if (env.TRANSLATE_PROVIDER === 'azure' && env.AZURE_TRANSLATOR_KEY) {
+    return new AzureTranslateProvider({ apiKey: env.AZURE_TRANSLATOR_KEY });
+  }
+  return new GeminiFlashProvider({ apiKey: env.GEMINI_API_KEY ?? '' });
 }
 
 export async function registerRelayServer(
   app: FastifyInstance,
   opts: RelayServerOptions,
 ): Promise<void> {
-  const { jwtService, deepgramApiKey, geminiApiKey, googleCloudTtsKeyFile, usageTracker } = opts;
+  const { jwtService, deepgramApiKey, geminiApiKey, azureTranslatorKey, translateProvider: translateProviderChoice, googleCloudTtsKeyFile, azureSpeechKey, azureSpeechRegion, usageTracker } = opts;
 
   app.get(
     '/ws/translate',
@@ -77,12 +95,19 @@ export async function registerRelayServer(
       socket.off('message', bufferingMessageHandler);
 
       // ── Pipeline providers (instantiated per server, shared across sessions) ─
-      const translateProvider = new GeminiFlashProvider({
-        apiKey: geminiApiKey ?? '',
+      const translateProvider = pickTranslateProvider({
+        TRANSLATE_PROVIDER: translateProviderChoice ?? 'azure',
+        AZURE_TRANSLATOR_KEY: azureTranslatorKey ?? '',
+        GEMINI_API_KEY: geminiApiKey ?? '',
       });
-      const ttsProvider = new GoogleCloudTtsProvider({
+      const cloudTts = new GoogleCloudTtsProvider({
         keyFilename: googleCloudTtsKeyFile || undefined,
       });
+      const ttsProviders: TTSProvider[] = [cloudTts];
+      if (azureSpeechKey && azureSpeechRegion) {
+        ttsProviders.push(new AzureTtsProvider({ apiKey: azureSpeechKey, region: azureSpeechRegion }));
+      }
+      const ttsProvider = new TtsProviderChain(ttsProviders);
 
       // ── 2. Enforce one connection per user ──────────────────────────────────
       sessionManager.register(userId, socket);
@@ -98,17 +123,22 @@ export async function registerRelayServer(
       // ── Mid-stream usage tick — every 60s ────────────────────────────────────
       const usageTickInterval = usageTracker
         ? setInterval(() => {
-            usageTracker.tick(userId, 60);
+            usageTracker.tick(userId, 60, 'seconds');
             void (async () => {
               const tier = await usageTracker.getTier(userId);
-              const cap = usageTracker.getLimit(tier);
-              if (cap === null) return; // pro — unlimited
+              const caps = usageTracker.getLimit(tier);
+              // Pro — all caps null → unlimited, never close
+              if (caps.seconds === null && caps.translateChars === null && caps.ttsChars === null) return;
               const used = await usageTracker.getToday(userId);
-              if (used >= cap) {
+              const exceeded: string[] = [];
+              if (caps.seconds !== null && used.seconds >= caps.seconds) exceeded.push('seconds');
+              if (caps.translateChars !== null && used.translateChars >= caps.translateChars) exceeded.push('translateChars');
+              if (caps.ttsChars !== null && used.ttsChars >= caps.ttsChars) exceeded.push('ttsChars');
+              if (exceeded.length > 0) {
                 const errFrame: ServerControlFrame = {
                   type: 'error',
                   code: 'quota_exceeded',
-                  message: 'Daily quota exceeded',
+                  message: `Daily quota exceeded: ${exceeded.join(', ')}`,
                 };
                 if (socket.readyState === socket.OPEN) {
                   socket.send(JSON.stringify(errFrame));
@@ -135,6 +165,16 @@ export async function registerRelayServer(
       let orchestrator: PipelineOrchestrator | null = null;
 
       asr.onTranscript((t) => {
+        // ACK backpressure on EVERY response — including empty interims —
+        // so the counter recovers during silence. Filtering empty interims
+        // here (instead of at the provider) keeps client + orchestrator
+        // free of noise while letting BP self-heal.
+        bp.frameAcknowledged();
+
+        if (t.text === '' && !t.isFinal) {
+          return; // empty interim — heartbeat only, nothing to forward
+        }
+
         const frame: ServerControlFrame = {
           type: 'transcript',
           text: t.text,
@@ -146,8 +186,6 @@ export async function registerRelayServer(
         }
         // Feed transcript into the pipeline orchestrator
         orchestrator?.onTranscript(t);
-        // Each transcript = one acknowledged frame for backpressure accounting
-        bp.frameAcknowledged();
       });
 
       asr.onError((err) => {
@@ -165,7 +203,14 @@ export async function registerRelayServer(
 
       // ── 5. Backpressure monitor ─────────────────────────────────────────────
       const bp = new BackpressureMonitor({
-        maxFramesInFlight: 5,
+        // 1000 frames = 100s buffer. Deepgram only sends Metadata sporadically
+        // (5-15s between messages), so our app-level BP counter — which only
+        // ACKs on incoming messages — saturated at 100 in <10s of continuous
+        // audio, causing Deepgram to idle-close 1011 ("did not receive audio
+        // within timeout window"). Deepgram has its own WS buffering; our BP
+        // is mostly belt-and-suspenders. 1000 effectively never trips for
+        // real speech but still catches a fully-stalled Deepgram (100s+).
+        maxFramesInFlight: 1000,
         onBackpressure: () => {
           const frame: ServerControlFrame = {
             type: 'warning',
@@ -182,13 +227,20 @@ export async function registerRelayServer(
       let asrStarted = false;
 
       // ── 6. Message handler ──────────────────────────────────────────────────
+      let _firstMsgLogged = false;
       socket.on('message', (raw, isBinary) => {
         resetIdle();
+
+        if (!_firstMsgLogged) {
+          _firstMsgLogged = true;
+          console.info(`[relay] first message received (isBinary=${isBinary}, size=${Buffer.isBuffer(raw) ? raw.length : -1})`);
+        }
 
         let parsed;
         try {
           parsed = parseFrame(isBinary ? (raw as Buffer) : raw.toString());
         } catch (err) {
+          console.warn(`[relay] parseFrame failed: ${err instanceof Error ? err.message : String(err)}`);
           const frame: ServerControlFrame = {
             type: 'error',
             code: 'invalid_frame',
@@ -216,7 +268,7 @@ export async function registerRelayServer(
         const { frame } = parsed;
 
         if (frame.type === 'config') {
-          const { srcLang } = frame;
+          const { srcLang, targetLang = 'vi' } = frame;
           if (!(ALLOWED_SRC_LANGS as readonly string[]).includes(srcLang)) {
             const errFrame: ServerControlFrame = {
               type: 'error',
@@ -227,8 +279,21 @@ export async function registerRelayServer(
             return;
           }
 
-          asrStarted = true;
-          void asr.start({ srcLang, sampleRate: 16000 });
+          // Defer asrStarted=true until Deepgram socket is actually OPEN.
+          // Setting it true before start() resolves caused audio frames to be
+          // forwarded to a CONNECTING socket → SDK threw "Socket is not open"
+          // → unhandled exception crashed the relay process.
+          void asr
+            .start({ srcLang, sampleRate: 16000 })
+            .then(() => {
+              asrStarted = true;
+            })
+            .catch((err: unknown) => {
+              app.log.error(
+                { userId, sessionId, err: err instanceof Error ? err.message : String(err) },
+                'ASR start failed',
+              );
+            });
 
           // Instantiate per-session pipeline orchestrator
           orchestrator?.destroy();
@@ -237,6 +302,13 @@ export async function registerRelayServer(
             translateProvider,
             ttsProvider,
             srcLang,
+            targetLang,
+            onTranslateComplete: usageTracker
+              ? (chars) => { usageTracker.tick(userId, chars, 'translateChars'); }
+              : undefined,
+            onTtsComplete: usageTracker
+              ? (chars) => { usageTracker.tick(userId, chars, 'ttsChars'); }
+              : undefined,
           });
 
           app.log.info({ userId, sessionId, srcLang }, 'ASR session started');
@@ -263,6 +335,18 @@ export async function registerRelayServer(
               await asr.start({ srcLang: currentSrcLang, sampleRate: 16000 });
               bp.reset();
             }
+          });
+          return;
+        }
+
+        if (frame.type === 'caption') {
+          // Subtitle-first path: bypass ASR, push text directly to orchestrator.
+          // No bp.frameSent() — this is not an audio chunk.
+          app.log.info({ userId, sessionId, ts: frame.ts }, 'caption frame received');
+          orchestrator?.onTranscript({
+            text: frame.text,
+            isFinal: frame.isFinal,
+            ts: frame.ts,
           });
           return;
         }

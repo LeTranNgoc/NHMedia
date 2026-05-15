@@ -1,8 +1,15 @@
 import { Polar } from '@polar-sh/sdk';
 
+export type PolarServer = 'sandbox' | 'production';
+
 export interface PolarClientOptions {
   apiKey: string;
   productIdPro: string;
+  /** Hosted checkout URL from Polar dashboard (e.g. https://buy.polar.sh/<slug>).
+   *  Used by getCheckoutUrl(). Optional — if empty, getCheckoutUrl throws. */
+  proCheckoutUrl?: string;
+  /** Defaults to 'production'. Set 'sandbox' to use sandbox.polar.sh. */
+  server?: PolarServer;
 }
 
 export interface CheckoutSessionParams {
@@ -21,10 +28,15 @@ export interface CheckoutSessionResult {
 export class PolarClient {
   private readonly client: Polar;
   private readonly productIdPro: string;
+  private readonly proCheckoutUrl: string;
 
   constructor(opts: PolarClientOptions) {
-    this.client = new Polar({ accessToken: opts.apiKey });
+    this.client = new Polar({
+      accessToken: opts.apiKey,
+      server: opts.server ?? 'production',
+    });
     this.productIdPro = opts.productIdPro;
+    this.proCheckoutUrl = opts.proCheckoutUrl ?? '';
   }
 
   /**
@@ -55,6 +67,23 @@ export class PolarClient {
     }
 
     return { url };
+  }
+
+  /**
+   * Build a hosted checkout URL using the Polar dashboard checkout link.
+   * Appends customer_external_id (userId from JWT) and customer_email as query params.
+   * Throws if POLAR_PRO_CHECKOUT_URL is not configured — caller returns 503.
+   *
+   * Security: userId and email come from JWT claims on the server, never from client input.
+   */
+  getCheckoutUrl(userId: string, email: string): string {
+    if (!this.proCheckoutUrl) {
+      throw new Error('POLAR_PRO_CHECKOUT_URL is not configured');
+    }
+    const url = new URL(this.proCheckoutUrl);
+    url.searchParams.set('customer_external_id', userId);
+    url.searchParams.set('customer_email', email);
+    return url.toString();
   }
 
   /**

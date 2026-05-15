@@ -32,16 +32,17 @@ const REQUIRED = [
       const abs = path.isAbsolute(v) ? v : path.join(ROOT, 'backend', v);
       return fs.existsSync(abs);
     } },
-  { key: 'GOOGLE_OAUTH_CLIENT_ID', service: 'GCP OAuth (Step 2.3.c)', test: (v) => v.endsWith('.apps.googleusercontent.com') },
-  { key: 'GOOGLE_OAUTH_CLIENT_SECRET', service: 'GCP OAuth (Step 2.3.c)', test: (v) => v.length >= 20 },
+  { key: 'GOOGLE_CLIENT_ID', service: 'GCP OAuth (Step 2.3.c)', test: (v) => v.endsWith('.apps.googleusercontent.com') },
+  { key: 'GOOGLE_CLIENT_SECRET', service: 'GCP OAuth (Step 2.3.c)', test: (v) => v.length >= 20 },
+  { key: 'MAGIC_LINK_BASE_URL', service: 'Backend public URL', test: (v) => v.startsWith('http://') || v.startsWith('https://') },
   { key: 'RESEND_API_KEY', service: 'Resend (Step 2.5)', test: (v) => v.startsWith('re_') },
   { key: 'EMAIL_FROM', service: 'Resend (Step 2.5)', test: (v) => v.includes('@') },
   { key: 'POLAR_API_KEY', service: 'Polar.sh (Step 2.6)', test: (v) => v.startsWith('polar_') },
-  { key: 'POLAR_WEBHOOK_SECRET', service: 'Polar.sh webhook (Step 2.6)', test: (v) => v.length >= 32 },
   { key: 'POLAR_PRODUCT_ID_PRO', service: 'Polar.sh product (Step 2.6)', test: (v) => v.length >= 8 },
 ];
 
 const OPTIONAL = [
+  { key: 'POLAR_WEBHOOK_SECRET', service: 'Polar.sh webhook (Step 2.6)', note: 'Empty OK in dev; required when NODE_ENV=production' },
   { key: 'ALLOWED_EXTENSION_IDS', service: 'Extension ID (Step 5)', note: 'Set after first extension load' },
   { key: 'PORT', service: 'Backend port (default 3000)', note: 'Match extension WXT_WS_URL' },
   { key: 'NODE_ENV', service: 'Environment', note: 'development | production' },

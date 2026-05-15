@@ -2,39 +2,76 @@ import type { Db, ObjectId } from 'mongodb';
 import { usageLogCollection } from '../db/models/usage-log.js';
 import { SubscriptionService } from '../billing/subscription-service.js';
 
-/** Max in-memory accumulator per user: 1 hour of audio. Prevents unbounded growth on DB outage. */
+/** Max in-memory accumulator per user per kind: 1 hour of audio / chars. Prevents unbounded growth on DB outage. */
 const MAX_IN_MEMORY_SECONDS = 3600;
+const MAX_IN_MEMORY_CHARS = 200_000;
 
-/** Daily free tier cap in seconds (15 min). */
-export const FREE_TIER_LIMIT_SECONDS = 900;
+/** Daily free tier cap in seconds. Prod: 900 (15 min). Dev: 36000 (10h). */
+export const FREE_TIER_LIMIT_SECONDS = 36000;
+
+/** Daily free tier cap for translated characters. Default: 50000. */
+export const FREE_TIER_LIMIT_TRANSLATE_CHARS = 50000;
+
+/** Daily free tier cap for TTS characters. Default: 50000. */
+export const FREE_TIER_LIMIT_TTS_CHARS = 50000;
+
+export type UsageKind = 'seconds' | 'translateChars' | 'ttsChars';
+
+export interface UsageTotals {
+  seconds: number;
+  translateChars: number;
+  ttsChars: number;
+}
+
+export interface UsageLimits {
+  seconds: number | null;
+  translateChars: number | null;
+  ttsChars: number | null;
+}
 
 /** Returns YYYY-MM-DD in UTC for the current day. */
 export function utcDateString(now = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
 
+interface PendingEntry {
+  seconds: number;
+  translateChars: number;
+  ttsChars: number;
+}
+
 export class UsageTracker {
-  /** userId (string) → seconds accumulated since last flush */
-  private readonly pending = new Map<string, number>();
+  /** userId → per-kind pending delta since last flush */
+  private readonly pending = new Map<string, PendingEntry>();
   private flushTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly db: Db) {}
 
   /**
-   * Accumulate `seconds` of captured audio for `userId`.
-   * Capped at MAX_IN_MEMORY_SECONDS to limit memory on DB outage.
+   * Accumulate usage for `userId`.
+   * @param kind defaults to 'seconds' for backward compatibility with 2-arg callers.
+   * Capped at MAX_IN_MEMORY_* to limit memory on DB outage.
    */
-  tick(userId: string, seconds: number): void {
-    const current = this.pending.get(userId) ?? 0;
-    const next = current + seconds;
-    if (next > MAX_IN_MEMORY_SECONDS) {
-      console.warn(
-        `[usage-tracker] userId=${userId} in-memory accumulator exceeded ${MAX_IN_MEMORY_SECONDS}s — capping`,
-      );
-      this.pending.set(userId, MAX_IN_MEMORY_SECONDS);
+  tick(userId: string, amount: number, kind: UsageKind = 'seconds'): void {
+    const entry = this.pending.get(userId) ?? { seconds: 0, translateChars: 0, ttsChars: 0 };
+
+    if (kind === 'seconds') {
+      const next = entry.seconds + amount;
+      if (next > MAX_IN_MEMORY_SECONDS) {
+        console.warn(
+          `[usage-tracker] userId=${userId} seconds accumulator exceeded ${MAX_IN_MEMORY_SECONDS} — capping`,
+        );
+        entry.seconds = MAX_IN_MEMORY_SECONDS;
+      } else {
+        entry.seconds = next;
+      }
+    } else if (kind === 'translateChars') {
+      entry.translateChars = Math.min(entry.translateChars + amount, MAX_IN_MEMORY_CHARS);
     } else {
-      this.pending.set(userId, next);
+      entry.ttsChars = Math.min(entry.ttsChars + amount, MAX_IN_MEMORY_CHARS);
     }
+
+    this.pending.set(userId, entry);
   }
 
   /**
@@ -54,7 +91,10 @@ export class UsageTracker {
 
     const promises: Promise<void>[] = [];
     for (const [userIdStr, delta] of snapshot) {
-      if (delta <= 0) continue;
+      const hasWork =
+        delta.seconds > 0 || delta.translateChars > 0 || delta.ttsChars > 0;
+      if (!hasWork) continue;
+
       let userId: ObjectId;
       try {
         const { ObjectId } = await import('mongodb');
@@ -64,12 +104,17 @@ export class UsageTracker {
         continue;
       }
 
+      const incPayload: Record<string, number> = {};
+      if (delta.seconds > 0) incPayload['secondsCaptured'] = delta.seconds;
+      if (delta.translateChars > 0) incPayload['translateCharsToday'] = delta.translateChars;
+      if (delta.ttsChars > 0) incPayload['ttsCharsToday'] = delta.ttsChars;
+
       promises.push(
         col
           .updateOne(
             { userId, date },
             {
-              $inc: { secondsCaptured: delta },
+              $inc: incPayload,
               $setOnInsert: { userId, date, createdAt: new Date() },
             },
             { upsert: true },
@@ -80,10 +125,13 @@ export class UsageTracker {
               `[usage-tracker] flush DB error for userId=${userIdStr}:`,
               err instanceof Error ? err.message : err,
             );
-            // Re-add the delta back to pending on failure — bounded by MAX cap
-            const existing = this.pending.get(userIdStr) ?? 0;
-            const restored = Math.min(existing + delta, MAX_IN_MEMORY_SECONDS);
-            this.pending.set(userIdStr, restored);
+            // Re-add the delta back to pending on failure — bounded by MAX caps
+            const existing = this.pending.get(userIdStr) ?? { seconds: 0, translateChars: 0, ttsChars: 0 };
+            this.pending.set(userIdStr, {
+              seconds: Math.min(existing.seconds + delta.seconds, MAX_IN_MEMORY_SECONDS),
+              translateChars: Math.min(existing.translateChars + delta.translateChars, MAX_IN_MEMORY_CHARS),
+              ttsChars: Math.min(existing.ttsChars + delta.ttsChars, MAX_IN_MEMORY_CHARS),
+            });
           }),
       );
     }
@@ -92,24 +140,34 @@ export class UsageTracker {
   }
 
   /**
-   * Get total seconds captured today for a user.
-   * Combines DB value + current in-memory pending delta.
+   * Get total usage today for a user — all three kinds.
+   * Combines DB values + current in-memory pending deltas.
+   * Old DB docs missing translateCharsToday/ttsCharsToday are treated as 0.
    */
-  async getToday(userId: string): Promise<number> {
+  async getToday(userId: string): Promise<UsageTotals> {
     const col = usageLogCollection(this.db);
     const date = utcDateString();
 
     let dbSeconds = 0;
+    let dbTranslateChars = 0;
+    let dbTtsChars = 0;
+
     try {
       const { ObjectId } = await import('mongodb');
       const doc = await col.findOne({ userId: new ObjectId(userId), date });
       dbSeconds = doc?.secondsCaptured ?? 0;
+      dbTranslateChars = doc?.translateCharsToday ?? 0;
+      dbTtsChars = doc?.ttsCharsToday ?? 0;
     } catch (err) {
       console.error('[usage-tracker] getToday DB error:', err instanceof Error ? err.message : err);
     }
 
-    const inMemory = this.pending.get(userId) ?? 0;
-    return dbSeconds + inMemory;
+    const inMemory = this.pending.get(userId) ?? { seconds: 0, translateChars: 0, ttsChars: 0 };
+    return {
+      seconds: dbSeconds + inMemory.seconds,
+      translateChars: dbTranslateChars + inMemory.translateChars,
+      ttsChars: dbTtsChars + inMemory.ttsChars,
+    };
   }
 
   /**
@@ -136,11 +194,18 @@ export class UsageTracker {
   }
 
   /**
-   * Get the daily cap in seconds for a tier.
-   * Returns null for unlimited (pro).
+   * Get the daily caps for a tier.
+   * Returns null for each kind that is unlimited (pro tier).
    */
-  getLimit(tier: 'free' | 'pro'): number | null {
-    return tier === 'free' ? FREE_TIER_LIMIT_SECONDS : null;
+  getLimit(tier: 'free' | 'pro'): UsageLimits {
+    if (tier === 'pro') {
+      return { seconds: null, translateChars: null, ttsChars: null };
+    }
+    return {
+      seconds: FREE_TIER_LIMIT_SECONDS,
+      translateChars: FREE_TIER_LIMIT_TRANSLATE_CHARS,
+      ttsChars: FREE_TIER_LIMIT_TTS_CHARS,
+    };
   }
 
   /**

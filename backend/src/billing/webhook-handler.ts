@@ -160,6 +160,7 @@ export class WebhookHandler {
       startedAt,
       endsAt,
     });
+    console.info(`[webhook] Pro subscription activated — userId=${userIdStr} sub=${data.id}`);
   }
 
   private async handleUpdated(event: WebhookEvent): Promise<void> {

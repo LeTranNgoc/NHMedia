@@ -1,7 +1,5 @@
 import type { TranscriptEvent } from '../providers/asr/asr-provider-interface.js';
 
-const DEBOUNCE_MS = 300;
-
 export type DebouncedTranscriptCallback = (text: string) => void;
 
 /**
@@ -14,7 +12,6 @@ export type DebouncedTranscriptCallback = (text: string) => void;
  */
 export class TranscriptDebouncer {
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private pendingText = '';
   private lastEmittedText = '';
   private readonly cb: DebouncedTranscriptCallback;
 
@@ -24,33 +21,24 @@ export class TranscriptDebouncer {
 
   push(event: TranscriptEvent): void {
     const text = event.text.trim();
-
-    // Skip empty or pure-whitespace transcripts
     if (!text) return;
-
-    // Skip if this text is a subset of what we already emitted
     if (this.lastEmittedText && this.lastEmittedText.includes(text)) return;
 
+    // Only emit on FINAL transcripts. Translating interims spammed Gemini at
+    // ~3 RPS (well over the 20 RPM free-tier limit). Finals arrive every
+    // 2-6s during continuous speech → ~10-30 RPM, fits the limit and adds
+    // ~1s latency over interim-based translation. Worth the trade for free tier.
     if (event.isFinal) {
-      // Cancel pending debounce, emit immediately
       this._cancelPending();
       this._emit(text);
-      return;
     }
-
-    // Interim: accumulate and (re)schedule
-    this.pendingText = text;
-    this._cancelPending();
-    this.timer = setTimeout(() => {
-      this._emit(this.pendingText);
-    }, DEBOUNCE_MS);
+    // Interim: ignored (debouncer is now finals-only).
   }
 
   /** Cancel any pending timer and discard accumulated text. Call on session close. */
   flush(): void {
     this._cancelPending();
     this.lastEmittedText = '';
-    this.pendingText = '';
   }
 
   private _cancelPending(): void {
@@ -63,7 +51,6 @@ export class TranscriptDebouncer {
   private _emit(text: string): void {
     if (!text) return;
     this.lastEmittedText = text;
-    this.pendingText = '';
     this.cb(text);
   }
 }

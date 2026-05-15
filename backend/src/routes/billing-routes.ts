@@ -35,20 +35,58 @@ export async function billingRoutes(
     async (request: FastifyRequest, reply: FastifyReply) => {
       const userId = request.user!.userId;
       const tier = await usageTracker.getTier(userId);
-      const limit = usageTracker.getLimit(tier);
-      const secondsCaptured = await usageTracker.getToday(userId);
+      const limits = usageTracker.getLimit(tier);
+      const usage = await usageTracker.getToday(userId);
 
+      // Backward-compat: keep legacy secondsCaptured/limitSeconds/percentUsed fields
       const percentUsed =
-        limit !== null ? Math.min(100, Math.round((secondsCaptured / limit) * 100)) : null;
+        limits.seconds !== null
+          ? Math.min(100, Math.round((usage.seconds / limits.seconds) * 100))
+          : null;
 
       return reply.status(200).send({
         tier,
         usageToday: {
-          secondsCaptured,
-          limitSeconds: limit,
+          secondsCaptured: usage.seconds,
+          limitSeconds: limits.seconds,
           percentUsed,
+          translateChars: usage.translateChars,
+          ttsChars: usage.ttsChars,
+        },
+        limits: {
+          seconds: limits.seconds,
+          translateChars: limits.translateChars,
+          ttsChars: limits.ttsChars,
         },
       });
+    },
+  );
+
+  // ── GET /billing/checkout-url ───────────────────────────────────────────────
+  // Returns pre-built Polar hosted checkout URL for authenticated user.
+  // customer_external_id is set server-side from JWT — no client input accepted.
+  app.get(
+    '/checkout-url',
+    { preHandler: authGuard },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { userId, email } = request.user!;
+      try {
+        const url = polarClient.getCheckoutUrl(userId, email ?? '');
+        return reply.status(200).send({ url });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'unknown';
+        if (msg.includes('not configured')) {
+          return reply.status(503).send({
+            code: 'CHECKOUT_NOT_CONFIGURED',
+            message: 'checkout not configured',
+          });
+        }
+        app.log.error({ err: msg }, 'checkout-url error');
+        return reply.status(503).send({
+          code: 'BILLING_UNAVAILABLE',
+          message: 'Billing service temporarily unavailable',
+        });
+      }
     },
   );
 
@@ -133,7 +171,9 @@ export async function billingRoutes(
       const days = Math.min(30, Math.max(1, parseInt(query['days'] ?? '7', 10)));
 
       const tier = await usageTracker.getTier(userId);
-      const limit = usageTracker.getLimit(tier);
+      const limits = usageTracker.getLimit(tier);
+      // Backward-compat: /usage only exposes seconds for now
+      const limitSeconds = limits.seconds;
 
       // Build list of last N days in UTC descending
       const dateList: string[] = [];
@@ -151,18 +191,18 @@ export async function billingRoutes(
 
       const byDate = new Map(docs.map((d) => [d.date, d.secondsCaptured]));
 
-      // Today: add in-memory pending
+      // Today: add in-memory pending (seconds only for /usage endpoint)
       const todayStr = utcDateString();
-      const todayPending = await usageTracker.getToday(userId);
+      const todayTotals = await usageTracker.getToday(userId);
 
       const result = dateList.map((date) => {
-        const seconds = date === todayStr ? todayPending : (byDate.get(date) ?? 0);
+        const seconds = date === todayStr ? todayTotals.seconds : (byDate.get(date) ?? 0);
         const percentUsed =
-          limit !== null ? Math.min(100, Math.round((seconds / limit) * 100)) : null;
+          limitSeconds !== null ? Math.min(100, Math.round((seconds / limitSeconds) * 100)) : null;
         return {
           date,
           secondsCaptured: seconds,
-          limitSeconds: limit,
+          limitSeconds,
           percentUsed,
         };
       });

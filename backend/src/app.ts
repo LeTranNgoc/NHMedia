@@ -29,10 +29,16 @@ export interface AppEnv {
   PORT?: string | number;
   DEEPGRAM_API_KEY?: string;
   GEMINI_API_KEY?: string;
+  AZURE_TRANSLATOR_KEY?: string;
+  TRANSLATE_PROVIDER?: 'gemini' | 'azure';
   GOOGLE_CLOUD_TTS_KEY_FILE?: string;
+  AZURE_SPEECH_KEY?: string;
+  AZURE_SPEECH_REGION?: string;
   POLAR_API_KEY?: string;
   POLAR_WEBHOOK_SECRET?: string;
   POLAR_PRODUCT_ID_PRO?: string;
+  POLAR_PRO_CHECKOUT_URL?: string;
+  POLAR_SERVER?: 'sandbox' | 'production';
 }
 
 export interface BuildAppOptions {
@@ -120,6 +126,8 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
     new PolarClient({
       apiKey: env.POLAR_API_KEY ?? 'placeholder',
       productIdPro: env.POLAR_PRODUCT_ID_PRO ?? 'placeholder',
+      proCheckoutUrl: env.POLAR_PRO_CHECKOUT_URL,
+      server: env.POLAR_SERVER,
     });
 
   // ── Error handler ─────────────────────────────────────────────────────────
@@ -159,7 +167,11 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
     jwtService,
     deepgramApiKey: env.DEEPGRAM_API_KEY ?? '',
     geminiApiKey: env.GEMINI_API_KEY ?? '',
+    azureTranslatorKey: env.AZURE_TRANSLATOR_KEY ?? '',
+    translateProvider: env.TRANSLATE_PROVIDER,
     googleCloudTtsKeyFile: env.GOOGLE_CLOUD_TTS_KEY_FILE ?? '',
+    azureSpeechKey: env.AZURE_SPEECH_KEY ?? '',
+    azureSpeechRegion: env.AZURE_SPEECH_REGION ?? 'southeastasia',
     usageTracker,
   });
 

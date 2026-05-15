@@ -10,7 +10,7 @@ describe('TranscriptDebouncer', () => {
     vi.useRealTimers();
   });
 
-  it('5 interims within 300ms → 1 emit after debounce window', async () => {
+  it('interims-only (no final) → never emit (finals-only contract)', async () => {
     const cb = vi.fn();
     const debouncer = new TranscriptDebouncer(cb);
 
@@ -18,14 +18,11 @@ describe('TranscriptDebouncer', () => {
       debouncer.push({ text: `hello ${i}`, isFinal: false, ts: i * 50 });
       await vi.advanceTimersByTimeAsync(50);
     }
+    await vi.advanceTimersByTimeAsync(1000);
 
-    // Not emitted yet — debounce window still open
+    // Debouncer now ignores interims — Gemini free tier 20 RPM limit forces
+    // finals-only translation. No emit unless an isFinal=true event arrives.
     expect(cb).not.toHaveBeenCalled();
-
-    // Advance past debounce window
-    await vi.advanceTimersByTimeAsync(300);
-    expect(cb).toHaveBeenCalledOnce();
-    expect(cb).toHaveBeenCalledWith('hello 5');
   });
 
   it('interim, then isFinal within 100ms → emit on isFinal immediately', async () => {
@@ -82,18 +79,21 @@ describe('TranscriptDebouncer', () => {
     expect(cb).not.toHaveBeenCalled();
   });
 
-  it('new interim after debounce window schedules a new timer', async () => {
+  it('interim after a final → still ignored (finals-only)', async () => {
     const cb = vi.fn();
     const debouncer = new TranscriptDebouncer(cb);
 
     debouncer.push({ text: 'first', isFinal: true, ts: 0 });
     expect(cb).toHaveBeenCalledOnce();
 
-    // New distinct text after prior emit
     debouncer.push({ text: 'second phrase', isFinal: false, ts: 500 });
-    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(1000);
 
+    // Interim ignored; only finals trigger callback.
+    expect(cb).toHaveBeenCalledTimes(1);
+
+    debouncer.push({ text: 'second phrase final', isFinal: true, ts: 1500 });
     expect(cb).toHaveBeenCalledTimes(2);
-    expect(cb).toHaveBeenLastCalledWith('second phrase');
+    expect(cb).toHaveBeenLastCalledWith('second phrase final');
   });
 });

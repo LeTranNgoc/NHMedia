@@ -4,5 +4,5 @@
  * DeepL / LibreTranslate can swap in later without touching the pipeline layer.
  */
 export interface TranslateProvider {
-  translate(srcText: string, srcLang: string, targetLang: 'vi'): Promise<string>;
+  translate(srcText: string, srcLang: string, targetLang: string): Promise<string>;
 }

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ClientControlFrame } from '@translate-voice/shared';
+import { ALLOWED_TARGET_LANGS } from '@translate-voice/shared';
 
 // ── Zod schemas for inbound client control frames ─────────────────────────────
 
@@ -10,17 +11,26 @@ const configFrameSchema = z.object({
   type: z.literal('config'),
   srcLang: z.string().min(1),
   audioMode: z.enum(['voice-over', 'replacement']),
+  targetLang: z.enum(ALLOWED_TARGET_LANGS as unknown as [string, ...string[]]).optional().default('vi'),
 });
 
 const pauseFrameSchema = z.object({ type: z.literal('pause') });
 const resumeFrameSchema = z.object({ type: z.literal('resume') });
 const flushFrameSchema = z.object({ type: z.literal('flush') });
 
+export const captionFrameSchema = z.object({
+  type: z.literal('caption'),
+  text: z.string().min(1),
+  ts: z.number(),
+  isFinal: z.boolean(),
+});
+
 const clientControlFrameSchema = z.discriminatedUnion('type', [
   configFrameSchema,
   pauseFrameSchema,
   resumeFrameSchema,
   flushFrameSchema,
+  captionFrameSchema,
 ]);
 
 // ── ParsedFrame discriminated union ──────────────────────────────────────────

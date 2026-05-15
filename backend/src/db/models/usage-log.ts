@@ -2,7 +2,8 @@ import type { Collection, Db, ObjectId } from 'mongodb';
 
 /**
  * Daily usage tracker — TTL index removes documents after 7 days.
- * secondsCaptured is incremented via $inc from UsageTracker.flush().
+ * All numeric fields are incremented via $inc from UsageTracker.flush().
+ * Old docs without translateCharsToday/ttsCharsToday read as undefined → treated as 0.
  */
 export interface UsageLog {
   _id: ObjectId;
@@ -11,6 +12,10 @@ export interface UsageLog {
   date: string;
   /** Total seconds of audio captured today — updated via $inc */
   secondsCaptured: number;
+  /** Total translated chars today — updated via $inc; absent on old docs (treat as 0) */
+  translateCharsToday?: number;
+  /** Total TTS chars today — updated via $inc; absent on old docs (treat as 0) */
+  ttsCharsToday?: number;
   createdAt: Date;
 }
 

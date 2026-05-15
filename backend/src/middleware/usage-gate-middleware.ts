@@ -1,16 +1,19 @@
-import type { UsageTracker } from '../lib/usage-tracker.js';
+import type { UsageTracker, UsageKind } from '../lib/usage-tracker.js';
 
 export interface UsageGateResult {
   allowed: boolean;
   tier: 'free' | 'pro';
+  /** null = unlimited (pro); number = seconds/chars remaining for that kind */
   secondsRemaining: number | null;
   reason?: 'quota_exceeded';
+  /** Which kinds have exceeded their cap. Populated when allowed=false. */
+  kindExceeded?: UsageKind[];
 }
 
 /**
  * WS handshake gate — call BEFORE accepting the WebSocket connection.
- * Returns allowed=false with reason='quota_exceeded' if a free user has
- * consumed >= 900 seconds today.
+ * Checks all three usage kinds (seconds, translateChars, ttsChars) independently.
+ * Returns allowed=false with reason='quota_exceeded' + kindExceeded list if any cap is hit.
  *
  * Pro users always pass. secondsRemaining is null for pro (unlimited).
  */
@@ -19,27 +22,42 @@ export async function checkUsageGate(
   tracker: UsageTracker,
 ): Promise<UsageGateResult> {
   const tier = await tracker.getTier(userId);
-  const limit = tracker.getLimit(tier);
+  const limits = tracker.getLimit(tier);
 
-  if (limit === null) {
-    // Pro — unlimited
+  // Pro — all limits are null → unlimited
+  if (limits.seconds === null && limits.translateChars === null && limits.ttsChars === null) {
     return { allowed: true, tier, secondsRemaining: null };
   }
 
-  const usedToday = await tracker.getToday(userId);
+  const usage = await tracker.getToday(userId);
 
-  if (usedToday >= limit) {
+  const exceeded: UsageKind[] = [];
+
+  if (limits.seconds !== null && usage.seconds >= limits.seconds) {
+    exceeded.push('seconds');
+  }
+  if (limits.translateChars !== null && usage.translateChars >= limits.translateChars) {
+    exceeded.push('translateChars');
+  }
+  if (limits.ttsChars !== null && usage.ttsChars >= limits.ttsChars) {
+    exceeded.push('ttsChars');
+  }
+
+  if (exceeded.length > 0) {
     return {
       allowed: false,
       tier,
       secondsRemaining: 0,
       reason: 'quota_exceeded',
+      kindExceeded: exceeded,
     };
   }
+
+  const secondsRemaining = limits.seconds !== null ? limits.seconds - usage.seconds : null;
 
   return {
     allowed: true,
     tier,
-    secondsRemaining: limit - usedToday,
+    secondsRemaining,
   };
 }
