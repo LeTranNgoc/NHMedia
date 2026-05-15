@@ -148,6 +148,36 @@ export class AudioPipelineController {
     this.ws?.sendCaption(text, ts);
   }
 
+  /**
+   * Stop mic/tab capture + tick loop while keeping WS + playback alive.
+   * Called by the SW when CC subtitle path becomes the active source
+   * (proper fix for review finding C3 — backend dedupe is only defense
+   * in depth; this stops the duplicate work at the client).
+   * Safe to call from any state — idempotent if capture already null.
+   */
+  async pauseAudioCapture(): Promise<void> {
+    if (!this.capture) return; // already paused or never started in audio mode
+
+    this.clearTick();
+
+    await this.capture.stop().catch((e) =>
+      chrome.runtime.sendMessage({
+        type: 'sw.telemetry.error',
+        context: 'pauseAudioCapture.stop',
+        error: String(e),
+      }).catch(() => {}),
+    );
+    this.capture = null;
+    this.ringBuffer = null;
+
+    if (this.vad) {
+      await this.vad.dispose().catch((e) =>
+        console.error('[pipeline] vad dispose error during pause:', e),
+      );
+      this.vad = null;
+    }
+  }
+
   async stop(): Promise<void> {
     if (this.state === 'idle' || this.state === 'stopping') return;
     this.state = 'stopping';

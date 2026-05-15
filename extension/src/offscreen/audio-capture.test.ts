@@ -7,11 +7,21 @@ const mockAddModule = vi.fn<() => Promise<void>>(async () => {});
 const mockGetUserMedia = vi.fn<() => Promise<MediaStream>>();
 const mockCreateMediaStreamSource = vi.fn(() => ({ connect: vi.fn(), disconnect: vi.fn() }));
 const mockAudioCtxClose = vi.fn<() => Promise<void>>(async () => {});
+const mockAudioCtxResume = vi.fn<() => Promise<void>>(async () => {});
+const mockCreateGain = vi.fn(() => ({
+  gain: { value: 0 },
+  connect: vi.fn(),
+  disconnect: vi.fn(),
+}));
 
 const mockAudioContext = vi.fn().mockImplementation(() => ({
   audioWorklet: { addModule: mockAddModule },
   createMediaStreamSource: mockCreateMediaStreamSource,
+  createGain: mockCreateGain,
   close: mockAudioCtxClose,
+  resume: mockAudioCtxResume,
+  destination: {},
+  state: 'suspended',
 }));
 
 // AudioWorkletNode is not available in happy-dom — stub it so start() can complete.
@@ -37,6 +47,12 @@ describe('AudioCapture — start() ordering (M7)', () => {
     mockGetUserMedia.mockReset();
     mockCreateMediaStreamSource.mockReset().mockReturnValue({ connect: vi.fn(), disconnect: vi.fn() });
     mockAudioCtxClose.mockReset();
+    mockAudioCtxResume.mockReset().mockResolvedValue(undefined);
+    mockCreateGain.mockReset().mockReturnValue({
+      gain: { value: 0 },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    });
     mockAudioContext.mockClear();
 
     vi.stubGlobal('navigator', {

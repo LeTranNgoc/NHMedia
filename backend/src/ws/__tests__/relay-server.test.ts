@@ -85,6 +85,26 @@ async function waitForMessage(ws: WebSocket, timeoutMs = 3000): Promise<unknown>
   });
 }
 
+/**
+ * Deterministically wait for the config-frame handler to (1) call asr.start
+ * and (2) flush the .then(() => asrStarted = true) microtask. Replaces the
+ * old `await setTimeout(100)` pattern that occasionally raced against the
+ * microtask queue and made audio-frame tests flake.
+ */
+async function waitForAsrStarted(): Promise<void> {
+  await vi.waitFor(
+    () => {
+      expect(mockAsrProvider.start).toHaveBeenCalled();
+    },
+    { timeout: 2000, interval: 10 },
+  );
+  // Flush a few microtask ticks so the `.then(() => asrStarted = true)`
+  // attached to the resolved mock promise runs before the test sends audio.
+  for (let i = 0; i < 3; i++) {
+    await new Promise<void>((r) => setImmediate(r));
+  }
+}
+
 beforeAll(async () => {
   mongod = await MongoMemoryServer.create();
   client = new MongoClient(mongod.getUri());
@@ -235,14 +255,15 @@ describe('WS message flow', () => {
 
     // Send config first
     ws.send(JSON.stringify({ type: 'config', srcLang: 'en', audioMode: 'voice-over' }));
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForAsrStarted();
 
     // Send binary audio
     const audioBuf = Buffer.alloc(3200);
     ws.send(audioBuf);
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(mockAsrProvider.sendAudio).toHaveBeenCalled();
+    await vi.waitFor(() => expect(mockAsrProvider.sendAudio).toHaveBeenCalled(), {
+      timeout: 1000,
+      interval: 10,
+    });
 
     ws.close();
     await waitForClose(ws).catch(() => {
@@ -274,15 +295,22 @@ describe('WS message flow', () => {
     const ws = await connectWs(url);
 
     ws.send(JSON.stringify({ type: 'config', srcLang: 'en', audioMode: 'voice-over' }));
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForAsrStarted();
+    const startCallsAfterConfig = (mockAsrProvider.start as ReturnType<typeof vi.fn>).mock.calls.length;
 
     ws.send(JSON.stringify({ type: 'flush' }));
-    await new Promise((r) => setTimeout(r, 50));
-
-    // ASR stop + restart represents flush — verify stop was called
-    // (implementation detail: flush triggers stop then start fresh)
-    // At minimum ASR started once
-    expect(mockAsrProvider.start).toHaveBeenCalled();
+    // flush triggers asr.stop() then asr.start() in a .then() chain.
+    // Poll until start() has been called a second time (== flush restart),
+    // not just once (== initial config). Avoids the prior 50ms-race that
+    // sometimes asserted before the restart microtask had run.
+    await vi.waitFor(
+      () => {
+        expect(
+          (mockAsrProvider.start as ReturnType<typeof vi.fn>).mock.calls.length,
+        ).toBeGreaterThan(startCallsAfterConfig);
+      },
+      { timeout: 1000, interval: 10 },
+    );
 
     ws.close();
     await waitForClose(ws).catch(() => {
@@ -296,12 +324,13 @@ describe('WS message flow', () => {
     const ws = await connectWs(url);
 
     ws.send(JSON.stringify({ type: 'config', srcLang: 'en', audioMode: 'voice-over' }));
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForAsrStarted();
 
     ws.close();
-    await new Promise((r) => setTimeout(r, 100));
-
-    expect(mockAsrProvider.stop).toHaveBeenCalled();
+    await vi.waitFor(() => expect(mockAsrProvider.stop).toHaveBeenCalled(), {
+      timeout: 1000,
+      interval: 10,
+    });
   });
 });
 
@@ -367,7 +396,7 @@ describe('WS backpressure', () => {
 
     const ws = await connectWs(url);
     ws.send(JSON.stringify({ type: 'config', srcLang: 'en', audioMode: 'voice-over' }));
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForAsrStarted();
 
     // Collect messages in background
     const messages: unknown[] = [];
@@ -407,7 +436,7 @@ describe('WS backpressure', () => {
 
     const ws = await connectWs(url);
     ws.send(JSON.stringify({ type: 'config', srcLang: 'en', audioMode: 'voice-over' }));
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForAsrStarted();
 
     const messages: unknown[] = [];
     ws.on('message', (data) => {

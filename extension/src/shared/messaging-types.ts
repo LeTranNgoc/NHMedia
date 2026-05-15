@@ -42,6 +42,19 @@ export interface SwAudioStopMsg {
   type: 'audio.stop';
 }
 
+/**
+ * Stop AudioCapture + tick loop while keeping the WS + playback queue alive.
+ * Sent by the SW when CC subtitle path goes active — the WS will keep
+ * receiving caption.chunk frames and playing back TTS, but the offscreen
+ * document stops capturing mic/tab audio (saves bandwidth + CPU, and
+ * prevents the dual-source double-billing that the backend 5s dedupe
+ * defends against). Resume is not supported in MVP — user must toggle the
+ * extension off and back on to re-engage audio capture.
+ */
+export interface SwAudioPauseCaptureMsg {
+  type: 'audio.pause-capture';
+}
+
 export interface SwVideoEventMsg {
   type: 'content.video.event';
   event: 'play' | 'pause' | 'seeked' | 'seeking' | 'ended' | 'ratechange';
@@ -56,7 +69,12 @@ export interface SwCaptionChunkMsg {
   ts: number;
 }
 
-export type SwToOffscreenMsg = SwAudioStartMsg | SwAudioStopMsg | SwVideoEventMsg | SwCaptionChunkMsg;
+export type SwToOffscreenMsg =
+  | SwAudioStartMsg
+  | SwAudioStopMsg
+  | SwAudioPauseCaptureMsg
+  | SwVideoEventMsg
+  | SwCaptionChunkMsg;
 
 // ── Offscreen → SW ────────────────────────────────────────────────────────────
 

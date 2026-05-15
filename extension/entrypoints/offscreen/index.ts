@@ -38,6 +38,17 @@ chrome.runtime.onMessage.addListener(
       return true; // async response
     }
 
+    if (msg.type === 'audio.pause-capture') {
+      controller
+        .pauseAudioCapture()
+        .then(() => sendResponse({ ok: true }))
+        .catch((err: unknown) => {
+          console.error('[offscreen] audio.pause-capture failed:', err);
+          sendResponse({ ok: false, error: String(err) });
+        });
+      return true; // async response
+    }
+
     // Video events forwarded from SW → offscreen for pipeline timeline control
     if (msg.type === 'content.video.event') {
       controller.handleVideoEvent(msg.event, msg.playbackRate);

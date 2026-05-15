@@ -428,6 +428,52 @@ Free tier 15 phút/ngày = 900s. Để test nhanh:
 
 Nhớ revert lại 900 sau khi test xong.
 
+### 7.4. Smoke test Polar Pro upgrade flow (sandbox)
+
+> Mục đích: verify webhook → Mongo `tier='pro'` xảy ra sau khi user pay sandbox checkout. Cần làm trước public beta.
+
+**Prerequisites:**
+- Polar dashboard ở **sandbox** mode (`sandbox.polar.sh`), Pro product đã tạo + checkout link copied vào `.env` (`POLAR_PRO_CHECKOUT_URL`)
+- Backend chạy local + expose qua tunnel (ngrok / cloudflared) để Polar webhook gọi tới được. Vd `ngrok http 3000` → set Polar webhook URL `https://<id>.ngrok-free.app/billing/webhook`
+- Polar webhook secret đã set vào `.env` (`POLAR_WEBHOOK_SECRET`)
+- Backend log mở để theo dõi
+
+**Checklist:**
+
+1. **Sign in qua extension** với 1 tài khoản test (Google OAuth hoặc magic link). Note `userId` từ Mongo `users` collection.
+2. **Verify free tier ban đầu:**
+   ```bash
+   curl http://localhost:3000/billing/me \
+     -H "Authorization: Bearer <JWT_from_chrome_storage>"
+   # → { tier: 'free', usageToday: {...}, limits: { seconds, translateChars, ttsChars } }
+   ```
+3. **Click Upgrade button trong popup** → mở Polar sandbox checkout. Confirm URL chứa `customer_external_id=<userId>` (server-side derived).
+4. **Pay** với Polar sandbox test card (xem Polar docs cho test card numbers).
+5. **Theo dõi backend log** — phải thấy:
+   ```
+   [polar-webhook] received event: subscription.created
+   [polar-webhook] verified signature
+   [polar-webhook] Pro subscription activated for user <userId>
+   ```
+6. **Verify Mongo state:**
+   ```js
+   db.subscriptions.findOne({ userId: ObjectId("<userId>") })
+   // → { ..., status: 'active', tier: 'pro', polarSubscriptionId: 'sub_xxx', createdAt: <recent> }
+   ```
+7. **Reload popup** → tier badge phải hiện "Pro" và quota bars phải hiện "Unlimited".
+8. **Re-fetch /billing/me** → `{ tier: 'pro', limits: { seconds: null, translateChars: null, ttsChars: null } }`.
+9. **Test cancel flow:** Cancel sub trong Polar dashboard → backend log phải thấy `subscription.canceled` event → Mongo `subscriptions` row có `status: 'canceled'` + `endsAt` set. Pipeline vẫn cho user dùng đến `endsAt` (per `getTier` logic).
+
+**Fail signals & triage:**
+- Webhook không tới → check ngrok tunnel còn live, Polar webhook URL đúng (`/billing/webhook` không phải `/webhook`).
+- Signature mismatch trong log → `POLAR_WEBHOOK_SECRET` trong `.env` không khớp với secret trên Polar dashboard.
+- Mongo không update → check `productId` trong event payload khớp `POLAR_PRODUCT_ID_PRO`. Polar có nhiều product, webhook handler ignore unknown product IDs (intentional, log warning).
+- `customer_external_id` mismatch → user pay cho user khác. Check JWT-derived ID trong checkout URL khớp Polar metadata.
+
+**Cleanup sau test:**
+- Polar sandbox không thật charge, không cần refund manual.
+- Có thể delete subscription row trong Mongo nếu muốn re-test từ free state: `db.subscriptions.deleteOne({ userId: ObjectId("<userId>") })`.
+
 ---
 
 ## 8. Troubleshooting common issues
@@ -554,6 +600,36 @@ Trước khi mở public beta:
 - SW restart resilience: persist to `chrome.storage.session`
 
 Xem `plans/reports/review-260513-0845-mvp-production-readiness.md` cho full list.
+
+---
+
+## 10. Operator notes — data-semantic cutovers
+
+> Operational gotchas mà analytics / billing consumers cần biết khi diễn giải `usage_log` qua các deploys.
+
+### `usage_log.translateCharsToday` — output → input chars (commit e8a6c34, 2026-05-15)
+
+Trước commit `e8a6c34`, `translateCharsToday` được tăng theo độ dài chuỗi **dịch (output)**:
+
+```
+onTranslateComplete?.(translatedText.length)   // ❌ old
+```
+
+Sau commit (review finding I3), counter đổi sang chuỗi **gốc (input)** để khớp với cách Azure Translator + Google Cloud Translate tính phí:
+
+```
+onTranslateComplete?.(srcText.length)          // ✅ new
+```
+
+**Hệ quả vận hành:**
+
+- Rows ghi trước `e8a6c34` (mọi prod deploy ≤ 2026-05-15) chứa **OUTPUT length**.
+- Rows ghi từ `e8a6c34` trở đi chứa **INPUT length**.
+- Output thường lớn hơn input cho EN→VI / EN→JA / EN→DE (1.1-1.4×); ngược lại cho VI→EN / JA→EN.
+- **Analytics SQL/aggregation cộng `translateCharsToday` qua mốc cutover sẽ trộn hai đơn vị** — biểu đồ cost-per-user có thể đứt gãy. Nếu chart-watcher báo "translate chars giảm 25% sau deploy ngày X" → đây là semantics shift, không phải user behavior thay đổi.
+- Quota cap (`FREE_TIER_LIMIT_TRANSLATE_CHARS`) áp lên cùng counter → free user post-cutover có thể **dùng được nhiều hơn một chút** so với trước, vì output thường > input. Acceptable, không reset cap.
+
+**Recovery option (nếu cần lịch sử thuần input):** không có. Output→input mapping cần re-translate, không khả thi với 50k+ rows. Tốt nhất là note mốc cutover trong dashboard và phân tích từng giai đoạn riêng.
 
 ---
 

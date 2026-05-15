@@ -240,6 +240,14 @@ export class MessageRouter {
         // Content script confirmed CC subtitle path is active.
         this.ccSource = { lang: msg.lang, kind: msg.kind };
         this.broadcastStatus();
+        // C3 client-side fix: stop AudioCapture so we don't pay for mic/tab
+        // capture + ASR translation in parallel with the CC path. The backend
+        // 5s dedupe stays as defense in depth.
+        void this.offscreen
+          .sendToOffscreen({ type: 'audio.pause-capture' })
+          .catch((e) =>
+            console.warn('[message-router] audio.pause-capture failed:', e),
+          );
         return false;
       }
 
