@@ -28,3 +28,5 @@ AGENTS.md
 plans/
 # VAD model — download via `pnpm vad:download` instead of committing 2.2MB binary
 extension/public/vad/silero-vad.onnx
+# ONNX Runtime wasm binaries (~38MB) — copied by setup from node_modules
+extension/public/ort/
