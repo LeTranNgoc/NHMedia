@@ -231,6 +231,36 @@ describe('UsageTracker.getLimit', () => {
     expect(limits.translateChars).toBeNull();
     expect(limits.ttsChars).toBeNull();
   });
+
+  // Regression: C1 — env-injected limits were silently ignored when callers
+  // passed an override (main.ts bypass). Lock the constructor contract.
+  it('uses injected limits over module defaults (C1 regression)', () => {
+    const custom = new UsageTracker(db, {
+      seconds: 900,
+      translateChars: 100,
+      ttsChars: 200,
+    });
+    const limits = custom.getLimit('free');
+    expect(limits.seconds).toBe(900);
+    expect(limits.translateChars).toBe(100);
+    expect(limits.ttsChars).toBe(200);
+  });
+
+  it('falls back to module defaults when no limits injected (C1 regression)', () => {
+    const fallback = new UsageTracker(db);
+    const limits = fallback.getLimit('free');
+    expect(limits.seconds).toBe(FREE_TIER_LIMIT_SECONDS);
+    expect(limits.translateChars).toBe(FREE_TIER_LIMIT_TRANSLATE_CHARS);
+    expect(limits.ttsChars).toBe(FREE_TIER_LIMIT_TTS_CHARS);
+  });
+
+  it('mixes injected and default per-kind via undefined (C1 regression)', () => {
+    const partial = new UsageTracker(db, { seconds: 900 });
+    const limits = partial.getLimit('free');
+    expect(limits.seconds).toBe(900);
+    expect(limits.translateChars).toBe(FREE_TIER_LIMIT_TRANSLATE_CHARS);
+    expect(limits.ttsChars).toBe(FREE_TIER_LIMIT_TTS_CHARS);
+  });
 });
 
 describe('UsageTracker.getTier — sort correctness (upgrade→cancel→resub)', () => {

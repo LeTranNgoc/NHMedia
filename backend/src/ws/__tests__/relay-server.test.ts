@@ -307,6 +307,32 @@ describe('WS message flow', () => {
 
 // ── ASR error propagation ─────────────────────────────────────────────────────
 describe('WS ASR error propagation', () => {
+  // Regression: I2 — ASR start failure was silently logged server-side, leaving
+  // the frontend stuck in `capturing` state forever. The fix sends an error
+  // frame + closes the socket with 1011 so the UI exits the spinner.
+  it('sends asr_start_failed + closes 1011 when asr.start rejects (I2 regression)', async () => {
+    (mockAsrProvider.start as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('Deepgram unreachable'),
+    );
+
+    const token = await jwtService.sign({ userId: 'user-asrstart-fail', email: 'asf@test.com' });
+    const url = `ws://127.0.0.1:${serverPort}/ws/translate?token=${token}&srcLang=en`;
+    const ws = await connectWs(url);
+
+    const msgPromise = waitForMessage(ws);
+    const closePromise = waitForClose(ws);
+
+    ws.send(JSON.stringify({ type: 'config', srcLang: 'en', audioMode: 'voice-over' }));
+
+    const msg = (await msgPromise) as { type: string; code: string; message: string };
+    expect(msg.type).toBe('error');
+    expect(msg.code).toBe('asr_start_failed');
+    expect(msg.message).toContain('Deepgram unreachable');
+
+    const closeResult = await closePromise;
+    expect(closeResult.code).toBe(1011);
+  });
+
   it('sends error frame to client when ASR emits error', async () => {
     const token = await jwtService.sign({ userId: 'user-asrerr', email: 'asrerr@test.com' });
     const url = `ws://127.0.0.1:${serverPort}/ws/translate?token=${token}&srcLang=en`;
