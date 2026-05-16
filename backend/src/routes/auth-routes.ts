@@ -7,7 +7,7 @@ import type { JwtService } from '../auth/jwt-service.js';
 import { buildAuthGuard } from '../middleware/auth-guard.js';
 import { usersCollection } from '../db/models/user.js';
 import type { User } from '../db/models/user.js';
-import type { EmailRateLimiter } from '../lib/email-rate-limiter.js';
+import type { RateLimiter } from '../lib/email-rate-limiter.js';
 import { checkFingerprintAllowed, computeFingerprint } from '../lib/fingerprint.js';
 
 const magicLinkRequestBody = z.object({
@@ -25,7 +25,7 @@ export interface AuthRoutesOptions {
   googleOAuthService: GoogleOAuthService;
   jwtService: JwtService;
   /** Rate limiter for /magic-link/request — keyed per email, 5 req/hour */
-  emailRateLimiter: EmailRateLimiter;
+  emailRateLimiter: RateLimiter;
   /** Base URL for the backend (e.g. http://localhost:3000) */
   baseUrl: string;
   /** Allowlisted Chrome extension IDs. Empty array = dev mode (allow any). */
@@ -148,7 +148,7 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
       });
     }
 
-    if (!emailRateLimiter.check(email)) {
+    if (!(await emailRateLimiter.check(email))) {
       return reply.status(429).send({
         code: 'RATE_LIMITED',
         message: 'Too many requests — try again later',

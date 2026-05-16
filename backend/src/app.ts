@@ -7,7 +7,7 @@ import { JwtService } from './auth/jwt-service.js';
 import { MagicLinkService } from './auth/magic-link-service.js';
 import { EmailService } from './auth/email-service.js';
 import { GoogleOAuthService } from './auth/google-oauth-service.js';
-import { EmailRateLimiter } from './lib/email-rate-limiter.js';
+import { createEmailRateLimiter, type RateLimiter } from './lib/email-rate-limiter.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { authRoutes } from './routes/auth-routes.js';
 import { healthRoutes } from './routes/health-routes.js';
@@ -47,6 +47,7 @@ export interface AppEnv {
   LOGTAIL_SOURCE_TOKEN?: string;
   APP_RELEASE?: string;
   MAX_ACCOUNTS_PER_FINGERPRINT?: number;
+  REDIS_URL?: string;
 }
 
 export interface BuildAppOptions {
@@ -57,7 +58,7 @@ export interface BuildAppOptions {
     emailService?: EmailService;
     magicLinkService?: MagicLinkService;
     googleOAuthService?: GoogleOAuthService;
-    emailRateLimiter?: EmailRateLimiter;
+    emailRateLimiter?: RateLimiter;
     usageTracker?: UsageTracker;
     polarClient?: PolarClient;
   };
@@ -127,8 +128,15 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
       env.GOOGLE_CLIENT_SECRET ?? '',
       `${env.MAGIC_LINK_BASE_URL}/auth/google/callback`,
     );
-  // Rate limit: 5 requests per email per hour
-  const emailRateLimiter = overrides?.emailRateLimiter ?? new EmailRateLimiter(5, 60 * 60 * 1000);
+  // Rate limit: 5 requests per email per hour. Backend picks Redis when
+  // REDIS_URL is set, else in-memory (dev/test default).
+  const emailRateLimiter =
+    overrides?.emailRateLimiter ??
+    createEmailRateLimiter({
+      redisUrl: env.REDIS_URL,
+      max: 5,
+      timeWindowMs: 60 * 60 * 1000,
+    });
 
   const usageTracker =
     overrides?.usageTracker ??

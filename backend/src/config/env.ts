@@ -46,6 +46,10 @@ const envSchema = z.object({
    *  Free-tier abuse guard. 0 = disabled. Default 3 = small headroom for shared
    *  households/offices. */
   MAX_ACCOUNTS_PER_FINGERPRINT: z.coerce.number().default(3),
+  /** Redis connection URL for cross-process rate-limiting. Empty = in-memory
+   *  (single-process only; multi-instance prod MUST set this — Upstash free
+   *  tier covers ~10k commands/day, enough for closed beta sign-up volume). */
+  REDIS_URL: z.string().optional().default(''),
 });
 
 export type Env = z.infer<typeof envSchema>;

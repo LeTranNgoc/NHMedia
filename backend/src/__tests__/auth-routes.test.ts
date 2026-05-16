@@ -4,13 +4,13 @@ import { MongoClient, Db } from 'mongodb';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../app.js';
 import type { EmailService } from '../auth/email-service.js';
-import { EmailRateLimiter } from '../lib/email-rate-limiter.js';
+import { InMemoryRateLimiter } from '../lib/email-rate-limiter.js';
 
 let mongod: MongoMemoryServer;
 let client: MongoClient;
 let db: Db;
 let app: FastifyInstance;
-let rateLimiter: EmailRateLimiter;
+let rateLimiter: InMemoryRateLimiter;
 
 const TEST_ENV = {
   MONGO_URI: '',
@@ -38,7 +38,7 @@ beforeAll(async () => {
   await db.collection('magic_link_tokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
   TEST_ENV.MONGO_URI = mongod.getUri();
-  rateLimiter = new EmailRateLimiter(5, 60 * 60 * 1000);
+  rateLimiter = new InMemoryRateLimiter(5, 60 * 60 * 1000);
 
   app = await buildApp({
     db,
@@ -58,7 +58,7 @@ beforeEach(async () => {
   await db.collection('magic_link_tokens').deleteMany({});
   await db.collection('users').deleteMany({});
   vi.clearAllMocks();
-  rateLimiter.reset(); // reset rate-limit counters between tests
+  await rateLimiter.reset(); // reset rate-limit counters between tests
 });
 
 // ── Health ────────────────────────────────────────────────────────────────────
