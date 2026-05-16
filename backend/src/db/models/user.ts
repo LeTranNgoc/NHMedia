@@ -6,6 +6,10 @@ export interface User {
   name: string | null;
   picture: string | null;
   authProviders: ('magic_link' | 'google')[];
+  /** Hashed device fingerprints (IP + UA + extensionId) collected on sign-in.
+   *  Used as a soft abuse signal — see `lib/fingerprint.ts`. Optional because
+   *  existing rows pre-dating this feature won't have it. */
+  fingerprints?: string[];
   createdAt: Date;
   updatedAt: Date;
 }

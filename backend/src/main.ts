@@ -3,11 +3,21 @@ import { loadEnv } from './config/env.js';
 import { connectMongo, closeMongo } from './db/mongo-client.js';
 import { buildApp } from './app.js';
 import { UsageTracker } from './lib/usage-tracker.js';
+import { initSentry } from './lib/observability.js';
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 
 async function main(): Promise<void> {
   const env = loadEnv();
+
+  // Init Sentry BEFORE anything else so boot-time errors are captured.
+  initSentry({
+    sentryDsn: env.SENTRY_DSN,
+    logtailToken: env.LOGTAIL_SOURCE_TOKEN,
+    release: env.APP_RELEASE,
+    environment: env.NODE_ENV,
+  });
+
   const db = await connectMongo(env.MONGO_URI);
 
   // UsageTracker created here so the shutdown handler can stop its interval.

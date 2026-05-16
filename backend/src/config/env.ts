@@ -36,6 +36,16 @@ const envSchema = z.object({
   FREE_TIER_LIMIT_SECONDS: z.coerce.number().default(36000),
   FREE_TIER_LIMIT_TRANSLATE_CHARS: z.coerce.number().default(50000),
   FREE_TIER_LIMIT_TTS_CHARS: z.coerce.number().default(50000),
+  /** Sentry DSN — empty = disabled (dev/test default). */
+  SENTRY_DSN: z.string().optional().default(''),
+  /** Logtail / Better Stack source token — empty = log to stdout (good for `fly logs`). */
+  LOGTAIL_SOURCE_TOKEN: z.string().optional().default(''),
+  /** App release tag for Sentry (defaults to package.json version at build). */
+  APP_RELEASE: z.string().optional().default(''),
+  /** Cap on duplicate sign-ups sharing the same fingerprint (IP+UA hash).
+   *  Free-tier abuse guard. 0 = disabled. Default 3 = small headroom for shared
+   *  households/offices. */
+  MAX_ACCOUNTS_PER_FINGERPRINT: z.coerce.number().default(3),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -57,9 +67,7 @@ const PRODUCTION_REQUIRED_SECRETS: Array<keyof Env> = [
 export function loadEnv(source: Record<string, string | undefined> = process.env): Env {
   const result = envSchema.safeParse(source);
   if (!result.success) {
-    const issues = result.error.issues
-      .map((i) => `  ${i.path.join('.')}: ${i.message}`)
-      .join('\n');
+    const issues = result.error.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`).join('\n');
     throw new Error(`Environment validation failed:\n${issues}`);
   }
 
@@ -76,8 +84,14 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
     }
 
     // POLAR_WEBHOOK_SECRET must be at least 32 chars to resist brute-force
-    if (env.POLAR_WEBHOOK_SECRET && env.POLAR_WEBHOOK_SECRET !== 'placeholder' && env.POLAR_WEBHOOK_SECRET.length < 32) {
-      problems.push(`  POLAR_WEBHOOK_SECRET: must be at least 32 characters in production (got ${env.POLAR_WEBHOOK_SECRET.length})`);
+    if (
+      env.POLAR_WEBHOOK_SECRET &&
+      env.POLAR_WEBHOOK_SECRET !== 'placeholder' &&
+      env.POLAR_WEBHOOK_SECRET.length < 32
+    ) {
+      problems.push(
+        `  POLAR_WEBHOOK_SECRET: must be at least 32 characters in production (got ${env.POLAR_WEBHOOK_SECRET.length})`,
+      );
     }
 
     if (problems.length > 0) {

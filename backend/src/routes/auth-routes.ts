@@ -1,11 +1,14 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { Db, ObjectId } from 'mongodb';
 import { z } from 'zod';
 import type { MagicLinkService } from '../auth/magic-link-service.js';
 import type { GoogleOAuthService } from '../auth/google-oauth-service.js';
 import type { JwtService } from '../auth/jwt-service.js';
 import { buildAuthGuard } from '../middleware/auth-guard.js';
+import { usersCollection } from '../db/models/user.js';
 import type { User } from '../db/models/user.js';
 import type { EmailRateLimiter } from '../lib/email-rate-limiter.js';
+import { checkFingerprintAllowed, computeFingerprint } from '../lib/fingerprint.js';
 
 const magicLinkRequestBody = z.object({
   email: z.string().email('Invalid email address'),
@@ -29,6 +32,25 @@ export interface AuthRoutesOptions {
   allowedExtensionIds: string[];
   /** Google OAuth client ID for building the auth URL */
   googleClientId: string;
+  /** MongoDB handle for fingerprint check + $addToSet on sign-in */
+  db: Db;
+  /** Max accounts sharing the same fingerprint before blocking sign-up. 0 = disabled. */
+  maxAccountsPerFingerprint: number;
+}
+
+function fingerprintFromRequest(request: FastifyRequest, extensionId?: string): string {
+  return computeFingerprint({
+    ip: request.ip,
+    userAgent: (request.headers['user-agent'] as string | undefined) ?? '',
+    extensionId,
+  });
+}
+
+async function recordFingerprint(db: Db, userId: ObjectId, fingerprint: string): Promise<void> {
+  await usersCollection(db).updateOne(
+    { _id: userId },
+    { $addToSet: { fingerprints: fingerprint } },
+  );
 }
 
 function userToDto(user: User) {
@@ -101,6 +123,8 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
     jwtService,
     emailRateLimiter,
     allowedExtensionIds,
+    db,
+    maxAccountsPerFingerprint,
   } = opts;
   const authGuard = buildAuthGuard(jwtService);
 
@@ -131,6 +155,23 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
       });
     }
 
+    // Free-tier abuse guard — block new sign-ups from a device that already
+    // backs N other accounts. Existing-user sign-ins pass through (the helper
+    // matches email+fingerprint pairs already on file).
+    const fingerprint = fingerprintFromRequest(request, extensionId);
+    const fpCheck = await checkFingerprintAllowed({
+      db,
+      fingerprint,
+      email,
+      maxAccounts: maxAccountsPerFingerprint,
+    });
+    if (!fpCheck.allowed) {
+      return reply.status(429).send({
+        code: 'FINGERPRINT_LIMIT',
+        message: 'Too many accounts from this device — contact support if this is a mistake.',
+      });
+    }
+
     await magicLinkService.request(email, extensionId);
     return reply.status(204).send();
   });
@@ -146,6 +187,9 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
     }
 
     const { user, extensionId } = await magicLinkService.verify(rawToken);
+    // Record the device fingerprint AFTER the token is verified (signal collection
+    // for future free-tier abuse blocks; the upfront check fires at /request).
+    await recordFingerprint(db, user._id, fingerprintFromRequest(request, extensionId));
     const jwt = await jwtService.sign({ userId: user._id.toString(), email: user.email });
 
     if (extensionId) {
@@ -169,6 +213,7 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
     }
 
     const user = await googleOAuthService.verifyIdToken(parsed.data.idToken);
+    await recordFingerprint(db, user._id, fingerprintFromRequest(request));
     const jwt = await jwtService.sign({ userId: user._id.toString(), email: user.email });
 
     return reply.status(200).send({ token: jwt, user: userToDto(user) });
@@ -182,7 +227,9 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
     const extensionId = query['extension_id'];
 
     if (!extensionId) {
-      return reply.status(400).send({ code: 'VALIDATION_ERROR', message: 'extension_id is required' });
+      return reply
+        .status(400)
+        .send({ code: 'VALIDATION_ERROR', message: 'extension_id is required' });
     }
 
     if (!isExtensionAllowed(extensionId, allowedExtensionIds)) {
@@ -211,7 +258,9 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
     }
 
     if (!code || !state) {
-      return reply.status(400).send({ code: 'VALIDATION_ERROR', message: 'code and state are required' });
+      return reply
+        .status(400)
+        .send({ code: 'VALIDATION_ERROR', message: 'code and state are required' });
     }
 
     // Verify state JWT → extract extensionId
@@ -224,7 +273,9 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
       }
       extensionId = ext;
     } catch {
-      return reply.status(400).send({ code: 'INVALID_STATE', message: 'Invalid or expired state parameter' });
+      return reply
+        .status(400)
+        .send({ code: 'INVALID_STATE', message: 'Invalid or expired state parameter' });
     }
 
     if (!isExtensionAllowed(extensionId, allowedExtensionIds)) {
@@ -232,6 +283,7 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
     }
 
     const user = await googleOAuthService.exchangeCode(code);
+    await recordFingerprint(db, user._id, fingerprintFromRequest(request, extensionId));
     const jwt = await jwtService.sign({ userId: user._id.toString(), email: user.email });
 
     // Redirect to the chromiumapp.org URL — chrome.identity.launchWebAuthFlow captures this

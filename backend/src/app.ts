@@ -15,6 +15,7 @@ import { registerRelayServer } from './ws/relay-server.js';
 import { billingRoutes } from './routes/billing-routes.js';
 import { UsageTracker } from './lib/usage-tracker.js';
 import { PolarClient } from './billing/polar-client.js';
+import { attachSentryErrorHandler, buildLoggerTransport } from './lib/observability.js';
 
 export interface AppEnv {
   JWT_SECRET: string;
@@ -42,6 +43,10 @@ export interface AppEnv {
   FREE_TIER_LIMIT_SECONDS?: number;
   FREE_TIER_LIMIT_TRANSLATE_CHARS?: number;
   FREE_TIER_LIMIT_TTS_CHARS?: number;
+  SENTRY_DSN?: string;
+  LOGTAIL_SOURCE_TOKEN?: string;
+  APP_RELEASE?: string;
+  MAX_ACCOUNTS_PER_FINGERPRINT?: number;
 }
 
 export interface BuildAppOptions {
@@ -59,9 +64,18 @@ export interface BuildAppOptions {
 }
 
 export async function buildApp({ db, env, overrides }: BuildAppOptions) {
-  const app = Fastify({
-    logger: env.NODE_ENV !== 'test',
+  const logTransport = buildLoggerTransport({
+    sentryDsn: env.SENTRY_DSN ?? '',
+    logtailToken: env.LOGTAIL_SOURCE_TOKEN ?? '',
+    release: env.APP_RELEASE ?? '',
+    environment: env.NODE_ENV,
   });
+
+  const app = Fastify({
+    logger: env.NODE_ENV === 'test' ? false : logTransport ? { transport: logTransport } : true,
+  });
+
+  attachSentryErrorHandler(app);
 
   // ── Plugins ────────────────────────────────────────────────────────────────
   await app.register(cookie);
@@ -90,26 +104,21 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
   await app.register(websocketPlugin);
 
   // ── Raw body parser for /billing/webhook (HMAC needs raw bytes) ────────────
-  app.addContentTypeParser(
-    'application/json',
-    { parseAs: 'buffer' },
-    (req, body, done) => {
-      // Attach raw buffer for webhook HMAC; also parse JSON for all other routes
-      (req as typeof req & { rawBody?: Buffer }).rawBody = body as Buffer;
-      try {
-        done(null, JSON.parse((body as Buffer).toString('utf8')));
-      } catch (err) {
-        done(err as Error);
-      }
-    },
-  );
+  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
+    // Attach raw buffer for webhook HMAC; also parse JSON for all other routes
+    (req as typeof req & { rawBody?: Buffer }).rawBody = body as Buffer;
+    try {
+      done(null, JSON.parse((body as Buffer).toString('utf8')));
+    } catch (err) {
+      done(err as Error);
+    }
+  });
 
   // ── Services ───────────────────────────────────────────────────────────────
   const jwtService = new JwtService(env.JWT_SECRET);
   const emailService = overrides?.emailService ?? new EmailService(env.RESEND_API_KEY);
   const magicLinkService =
-    overrides?.magicLinkService ??
-    new MagicLinkService(db, emailService, env.MAGIC_LINK_BASE_URL);
+    overrides?.magicLinkService ?? new MagicLinkService(db, emailService, env.MAGIC_LINK_BASE_URL);
   const googleOAuthService =
     overrides?.googleOAuthService ??
     new GoogleOAuthService(
@@ -119,8 +128,7 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
       `${env.MAGIC_LINK_BASE_URL}/auth/google/callback`,
     );
   // Rate limit: 5 requests per email per hour
-  const emailRateLimiter =
-    overrides?.emailRateLimiter ?? new EmailRateLimiter(5, 60 * 60 * 1000);
+  const emailRateLimiter = overrides?.emailRateLimiter ?? new EmailRateLimiter(5, 60 * 60 * 1000);
 
   const usageTracker =
     overrides?.usageTracker ??
@@ -159,6 +167,8 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
     baseUrl: env.MAGIC_LINK_BASE_URL,
     allowedExtensionIds,
     googleClientId: env.GOOGLE_CLIENT_ID,
+    db,
+    maxAccountsPerFingerprint: env.MAX_ACCOUNTS_PER_FINGERPRINT ?? 3,
   });
 
   // ── Billing routes ─────────────────────────────────────────────────────────

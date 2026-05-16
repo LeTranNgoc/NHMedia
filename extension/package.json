@@ -11,6 +11,7 @@
     "dev": "wxt"
   },
   "dependencies": {
+    "@sentry/browser": "^8.55.2",
     "@translate-voice/shared": "workspace:*",
     "onnxruntime-web": "^1.26.0",
     "react": "^19.2.6",
