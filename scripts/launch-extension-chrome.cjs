@@ -147,11 +147,14 @@ function build() {
     WXT_API_BASE: API_BASE,
     WXT_WS_URL: WS_URL,
   };
-  const cmd = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-  const r = spawnSync(cmd, ['-F', 'extension', 'build'], {
+  // Windows .cmd files require shell:true via Node spawn — without it, spawn
+  // returns ENOENT or exit-1 without running the build. shell:true also picks
+  // up pnpm from PATH on POSIX.
+  const r = spawnSync('pnpm', ['-F', 'extension', 'build'], {
     cwd: ROOT,
     env,
     stdio: 'inherit',
+    shell: true,
   });
   if (r.status !== 0) fail('Extension build failed.');
 }
