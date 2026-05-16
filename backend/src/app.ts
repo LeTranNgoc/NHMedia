@@ -8,6 +8,7 @@ import { MagicLinkService } from './auth/magic-link-service.js';
 import { EmailService } from './auth/email-service.js';
 import { GoogleOAuthService } from './auth/google-oauth-service.js';
 import { createEmailRateLimiter, type RateLimiter } from './lib/email-rate-limiter.js';
+import { MagicLinkBroker } from './lib/magic-link-broker.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { authRoutes } from './routes/auth-routes.js';
 import { healthRoutes } from './routes/health-routes.js';
@@ -167,6 +168,8 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
     .map((id) => id.trim())
     .filter(Boolean);
 
+  const magicLinkBroker = new MagicLinkBroker();
+
   await app.register(authRoutes, {
     prefix: '/auth',
     magicLinkService,
@@ -178,6 +181,7 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
     googleClientId: env.GOOGLE_CLIENT_ID,
     db,
     maxAccountsPerFingerprint: env.MAX_ACCOUNTS_PER_FINGERPRINT ?? 3,
+    magicLinkBroker,
   });
 
   // ── Billing routes ─────────────────────────────────────────────────────────

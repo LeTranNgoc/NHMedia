@@ -9,6 +9,7 @@ import { usersCollection } from '../db/models/user.js';
 import type { User } from '../db/models/user.js';
 import type { RateLimiter } from '../lib/email-rate-limiter.js';
 import { checkFingerprintAllowed, computeFingerprint } from '../lib/fingerprint.js';
+import type { MagicLinkBroker } from '../lib/magic-link-broker.js';
 
 const magicLinkRequestBody = z.object({
   email: z.string().email('Invalid email address'),
@@ -36,6 +37,8 @@ export interface AuthRoutesOptions {
   db: Db;
   /** Max accounts sharing the same fingerprint before blocking sign-up. 0 = disabled. */
   maxAccountsPerFingerprint: number;
+  /** Pub-sub between /verify and /listen — closes the copy-paste fallback loop. */
+  magicLinkBroker: MagicLinkBroker;
 }
 
 function fingerprintFromRequest(request: FastifyRequest, extensionId?: string): string {
@@ -125,6 +128,7 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
     allowedExtensionIds,
     db,
     maxAccountsPerFingerprint,
+    magicLinkBroker,
   } = opts;
   const authGuard = buildAuthGuard(jwtService);
 
@@ -176,6 +180,65 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
     return reply.status(204).send();
   });
 
+  // GET /magic-link/listen?email=... — Server-Sent Events stream.
+  // Popup opens this right after /request succeeds and waits for the
+  // `authenticated` event. The connection auto-closes after 15 minutes
+  // (magic-link TTL) so a forgotten tab doesn't pin a handler forever.
+  app.get('/magic-link/listen', async (request, reply) => {
+    const query = request.query as Record<string, string>;
+    const email = query['email'];
+    if (!email) {
+      return reply.status(400).send({ code: 'VALIDATION_ERROR', message: 'email is required' });
+    }
+
+    // SSE headers — fastify lets us hijack the response stream after this.
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    reply.raw.write(`: connected\n\n`); // initial comment so the client sees `onopen`
+
+    let closed = false;
+    const send = (event: string, data: unknown): void => {
+      if (closed) return;
+      try {
+        reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      } catch {
+        closed = true;
+      }
+    };
+
+    const unsubscribe = magicLinkBroker.subscribe(email, (payload) => {
+      send('authenticated', { token: payload.token, userId: payload.userId });
+      closed = true;
+      reply.raw.end();
+    });
+
+    // Heartbeat every 25s — keeps proxies from timing the connection out.
+    const heartbeat = setInterval(() => send('ping', { ts: Date.now() }), 25_000);
+
+    // Auto-close after the magic-link TTL (15 min) to free resources.
+    const ttlTimer = setTimeout(
+      () => {
+        send('timeout', { reason: 'magic_link_expired' });
+        closed = true;
+        reply.raw.end();
+      },
+      15 * 60 * 1000,
+    );
+
+    request.raw.on('close', () => {
+      closed = true;
+      clearInterval(heartbeat);
+      clearTimeout(ttlTimer);
+      unsubscribe();
+    });
+
+    return reply;
+  });
+
   // GET /magic-link/verify?token=...
   // When extensionId stored with token: returns bridge HTML page instead of JSON
   app.get('/magic-link/verify', async (request, reply) => {
@@ -191,6 +254,10 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
     // for future free-tier abuse blocks; the upfront check fires at /request).
     await recordFingerprint(db, user._id, fingerprintFromRequest(request, extensionId));
     const jwt = await jwtService.sign({ userId: user._id.toString(), email: user.email });
+
+    // Push to any SSE listener (popup waiting on /listen) so the user doesn't
+    // need the copy-paste fallback — popup auto-receives the JWT.
+    magicLinkBroker.publish({ token: jwt, userId: user._id.toString(), email: user.email });
 
     if (extensionId) {
       // Extension bridge mode: redirect to chromiumapp.org (launchWebAuthFlow listens here)

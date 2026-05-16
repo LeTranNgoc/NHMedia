@@ -1,7 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { BillingMeResponse, UsageSummary } from '@translate-voice/shared';
 import { getBillingMe, getUsageHistory } from '../../shared/billing-api-client';
-import { signInWithGoogle, requestMagicLink, signInWithToken, signOut } from '../../shared/auth-client';
+import {
+  signInWithGoogle,
+  requestMagicLink,
+  signInWithToken,
+  signOut,
+  listenForMagicLink,
+} from '../../shared/auth-client';
 import { PlanBadge } from '../components/plan-badge';
 import { UsageMeter } from '../components/usage-meter';
 import { UpgradeButton } from '../components/upgrade-button';
@@ -28,6 +34,8 @@ export function AccountView() {
   const [pastedToken, setPastedToken] = useState('');
   const [signInError, setSignInError] = useState<string | null>(null);
   const [signInLoading, setSignInLoading] = useState(false);
+  // AbortController for the in-flight SSE listener so Cancel / sign-out kills it.
+  const sseAbort = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -84,10 +92,23 @@ export function AccountView() {
     if (!email.trim()) return;
     setSignInError(null);
     setSignInLoading(true);
+    const trimmed = email.trim();
     try {
-      await requestMagicLink(email.trim());
-      setSentEmail(email.trim());
+      await requestMagicLink(trimmed);
+      setSentEmail(trimmed);
       setSignInStep('link-sent');
+
+      // Open SSE in background — when user clicks the email link, backend
+      // pushes the JWT here and we auto-load without copy-paste. Cancel
+      // path drops back to the textarea fallback below.
+      sseAbort.current?.abort();
+      sseAbort.current = new AbortController();
+      void listenForMagicLink(trimmed, sseAbort.current.signal).then((emailOnSuccess) => {
+        if (emailOnSuccess) {
+          // JWT already stored by listenForMagicLink; refresh account data.
+          void load();
+        }
+      });
     } catch (err) {
       setSignInError(err instanceof Error ? err.message : 'Gửi link thất bại');
     } finally {
@@ -110,6 +131,8 @@ export function AccountView() {
   };
 
   const handleSignOut = async () => {
+    sseAbort.current?.abort();
+    sseAbort.current = null;
     await signOut();
     setBilling(null);
     setHistory([]);
@@ -119,6 +142,14 @@ export function AccountView() {
     setSignInError(null);
     setLoadState('unauthenticated');
   };
+
+  // Tear down any open SSE on unmount (popup closed).
+  useEffect(
+    () => () => {
+      sseAbort.current?.abort();
+    },
+    [],
+  );
 
   // ── Loading ──────────────────────────────────────────────────────────────
   if (loadState === 'loading') {
@@ -165,7 +196,10 @@ export function AccountView() {
         {signInStep === 'idle' && (
           <button
             type="button"
-            onClick={() => { setSignInStep('email-form'); setSignInError(null); }}
+            onClick={() => {
+              setSignInStep('email-form');
+              setSignInError(null);
+            }}
             className="flex min-h-[44px] w-full items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
           >
             Đăng nhập bằng email
@@ -183,7 +217,9 @@ export function AccountView() {
               autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') void handleMagicLinkRequest(); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void handleMagicLinkRequest();
+              }}
               placeholder="ban@example.com"
               className="min-h-[44px] rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               disabled={signInLoading}
@@ -200,7 +236,11 @@ export function AccountView() {
               </button>
               <button
                 type="button"
-                onClick={() => { setSignInStep('idle'); setSignInError(null); setEmail(''); }}
+                onClick={() => {
+                  setSignInStep('idle');
+                  setSignInError(null);
+                  setEmail('');
+                }}
                 className="min-h-[44px] rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
               >
                 Hủy
@@ -212,8 +252,12 @@ export function AccountView() {
         {signInStep === 'link-sent' && (
           <div className="flex flex-col gap-2">
             <p className="rounded-md bg-green-50 px-3 py-2 text-xs text-green-700">
-              Đã gửi link đến <strong>{sentEmail}</strong>. Mở email và click vào link để hoàn tất
-              đăng nhập, sau đó sao chép token và dán vào đây.
+              Đã gửi link đến <strong>{sentEmail}</strong>. Mở email và click vào link — popup sẽ tự
+              động đăng nhập khi link được mở.
+              <br />
+              <span className="text-gray-500">
+                (Nếu auto không hoạt động: sao chép token từ trang đăng nhập và dán bên dưới.)
+              </span>
             </p>
             <label htmlFor="paste-token" className="text-xs font-medium text-gray-600">
               Dán token từ trang đăng nhập
@@ -239,7 +283,12 @@ export function AccountView() {
               </button>
               <button
                 type="button"
-                onClick={() => { setSignInStep('idle'); setPastedToken(''); setSignInError(null); }}
+                onClick={() => {
+                  sseAbort.current?.abort();
+                  setSignInStep('idle');
+                  setPastedToken('');
+                  setSignInError(null);
+                }}
                 className="min-h-[44px] rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
               >
                 Hủy
@@ -331,11 +380,7 @@ export function AccountView() {
               const mins = Math.floor(day.secondsCaptured / 60);
               const secs = day.secondsCaptured % 60;
               const label =
-                day.secondsCaptured === 0
-                  ? '0s'
-                  : mins > 0
-                    ? `${mins}m ${secs}s`
-                    : `${secs}s`;
+                day.secondsCaptured === 0 ? '0s' : mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
               return (
                 <li
                   key={day.date}

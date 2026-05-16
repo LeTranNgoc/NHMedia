@@ -55,10 +55,7 @@ export async function signInWithGoogle(): Promise<string> {
       interactive: true,
     });
   } catch (cause) {
-    throw Object.assign(
-      new Error('Google sign-in cancelled or failed'),
-      { cause },
-    );
+    throw Object.assign(new Error('Google sign-in cancelled or failed'), { cause });
   }
 
   const token = extractTokenFromUrl(redirectUrl);
@@ -92,6 +89,79 @@ export async function requestMagicLink(email: string): Promise<void> {
     const body = await res.text();
     throw new Error(`Magic link request failed (${res.status}): ${body}`);
   }
+}
+
+/**
+ * Open an SSE stream to /auth/magic-link/listen and resolve when the backend
+ * publishes the JWT (user clicked the email link). Stores the JWT and
+ * resolves with the user email — so the caller can transition to the main
+ * view without copy-paste.
+ *
+ * Auto-aborts if the AbortSignal fires OR after 15 min (matches backend TTL).
+ * Falls through to manual paste when the SSE errors / times out.
+ *
+ * @returns user email on success, null on timeout / abort.
+ */
+export function listenForMagicLink(email: string, signal?: AbortSignal): Promise<string | null> {
+  return new Promise((resolve) => {
+    const url = `${API_BASE}/auth/magic-link/listen?email=${encodeURIComponent(email)}`;
+    const es = new EventSource(url);
+    let settled = false;
+
+    const cleanup = (): void => {
+      if (settled) return;
+      settled = true;
+      es.close();
+    };
+
+    es.addEventListener('authenticated', (ev) => {
+      try {
+        const { token } = JSON.parse((ev as MessageEvent).data) as { token: string };
+        void storeToken(token).then(async () => {
+          // Round-trip /auth/me to surface the email (cheap, also validates the JWT).
+          try {
+            const me = await fetch(`${API_BASE}/auth/me`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (me.ok) {
+              const body = (await me.json()) as { user: { email: string } };
+              cleanup();
+              resolve(body.user.email);
+              return;
+            }
+          } catch {
+            // fall through to email-from-event
+          }
+          cleanup();
+          resolve(email);
+        });
+      } catch {
+        cleanup();
+        resolve(null);
+      }
+    });
+
+    es.addEventListener('timeout', () => {
+      cleanup();
+      resolve(null);
+    });
+
+    es.onerror = () => {
+      // EventSource auto-retries on transient errors; only resolve if the
+      // stream is fully closed (readyState === CLOSED).
+      if (es.readyState === EventSource.CLOSED) {
+        cleanup();
+        resolve(null);
+      }
+    };
+
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        cleanup();
+        resolve(null);
+      });
+    }
+  });
 }
 
 /**
