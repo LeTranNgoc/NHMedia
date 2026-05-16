@@ -143,6 +143,8 @@ fly secrets set `
   REDIS_URL="rediss://default:xxx@xxx.upstash.io:6379"
 ```
 
+**GCP TTS** set riêng (§4.3 dưới đây — inline JSON, không gộp vào command trên vì JSON có newline + special chars).
+
 **Note:** `CORS_ORIGINS` set tạm về dev extension ID (lấy từ `chrome://extensions` sau khi load unpacked). Sau khi Chrome Web Store published, update lại theo §10.
 
 **Tra cứu API keys** nếu chưa có:
@@ -154,40 +156,27 @@ fly secrets set `
 - Resend: https://resend.com/api-keys
 - Polar: https://sandbox.polar.sh → Settings → API → Generate token (CHỌN sandbox cho beta)
 
-### 4.3. GCP TTS service account file
+### 4.3. GCP TTS service account → inline JSON env
 
-Fly secrets không lưu file. Cách giải quyết:
-
-**Option A** (đơn giản nhất — Fly volume):
+Fly secrets không lưu file. Backend hiện hỗ trợ env `GOOGLE_CLOUD_TTS_CREDENTIALS_JSON` (đọc trong `google-cloud-tts-provider.ts` qua field `credentials`). Cách lấy + set:
 
 ```powershell
-fly volumes create gcp_secrets --region sin --size 1
+# Đọc file service-account → 1 dòng JSON → set vào Fly secret
+$json = Get-Content backend/secrets/gcp-tts-service-account.json -Raw
+fly secrets set GOOGLE_CLOUD_TTS_CREDENTIALS_JSON="$json"
 ```
 
-Sau đó cập nhật `fly.toml`:
+KHÔNG cần set `GOOGLE_CLOUD_TTS_KEY_FILE` trên Fly — để rỗng. Inline JSON wins khi cả hai được set.
 
-```toml
-[[mounts]]
-  source = "gcp_secrets"
-  destination = "/app/secrets"
+**Trên macOS/Linux** dùng:
+
+```bash
+fly secrets set GOOGLE_CLOUD_TTS_CREDENTIALS_JSON="$(cat backend/secrets/gcp-tts-service-account.json)"
 ```
 
-Rồi `scp` file vào machine sau khi deploy:
+**Verify** sau deploy: `/health` return 200 + thử trigger 1 sample translation E2E → check Fly logs không có "auth error" từ Google TTS SDK.
 
-```powershell
-fly ssh sftp shell
-> put backend/secrets/gcp-tts-service-account.json /app/secrets/gcp-tts.json
-> exit
-```
-
-Set secret:
-
-```powershell
-fly secrets set GOOGLE_CLOUD_TTS_KEY_FILE="/app/secrets/gcp-tts.json"
-```
-
-**Option B** (inline JSON — đơn giản, không cần volume):
-Sửa `backend/src/providers/tts/google-cloud-tts-provider.ts` nhận env `GOOGLE_TTS_CREDENTIALS_JSON` (raw JSON string) thay cho file path. Defer — option A đơn giản hơn cho v1.
+_Legacy volume-mount option_ (defer, chỉ dùng khi inline-JSON không khả thi vd. key file > 32KB Fly secret limit): tạo Fly volume + scp file. Bỏ qua cho closed beta.
 
 ### 4.4. First deploy
 

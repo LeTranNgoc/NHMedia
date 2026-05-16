@@ -33,6 +33,7 @@ export interface AppEnv {
   AZURE_TRANSLATOR_KEY?: string;
   TRANSLATE_PROVIDER?: 'gemini' | 'azure';
   GOOGLE_CLOUD_TTS_KEY_FILE?: string;
+  GOOGLE_CLOUD_TTS_CREDENTIALS_JSON?: string;
   AZURE_SPEECH_KEY?: string;
   AZURE_SPEECH_REGION?: string;
   POLAR_API_KEY?: string;
@@ -197,6 +198,7 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
     azureTranslatorKey: env.AZURE_TRANSLATOR_KEY ?? '',
     translateProvider: env.TRANSLATE_PROVIDER,
     googleCloudTtsKeyFile: env.GOOGLE_CLOUD_TTS_KEY_FILE ?? '',
+    googleCloudTtsCredentialsJson: env.GOOGLE_CLOUD_TTS_CREDENTIALS_JSON ?? '',
     azureSpeechKey: env.AZURE_SPEECH_KEY ?? '',
     azureSpeechRegion: env.AZURE_SPEECH_REGION ?? 'southeastasia',
     usageTracker,

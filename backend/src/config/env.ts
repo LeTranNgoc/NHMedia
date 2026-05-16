@@ -20,6 +20,9 @@ const envSchema = z.object({
   DEEPGRAM_API_KEY: z.string().optional().default(''),
   GEMINI_API_KEY: z.string().optional().default(''),
   GOOGLE_CLOUD_TTS_KEY_FILE: z.string().optional().default(''),
+  /** Service-account JSON content (stringified). Use this on Fly / serverless
+   *  where mounting a file is awkward. Wins over GOOGLE_CLOUD_TTS_KEY_FILE. */
+  GOOGLE_CLOUD_TTS_CREDENTIALS_JSON: z.string().optional().default(''),
   POLAR_API_KEY: z.string().optional().default(''),
   POLAR_WEBHOOK_SECRET: z.string().optional().default(''),
   POLAR_PRODUCT_ID_PRO: z.string().optional().default(''),
