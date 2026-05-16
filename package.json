@@ -16,6 +16,7 @@
     "test": "pnpm -r test",
     "dev:backend": "pnpm -F backend dev",
     "dev:extension": "pnpm -F extension dev",
+    "chrome:extension": "node scripts/launch-extension-chrome.cjs",
     "setup": "node scripts/setup.cjs",
     "check-env": "node scripts/check-env.cjs",
     "gen:secret": "node scripts/gen-jwt-secret.cjs",
