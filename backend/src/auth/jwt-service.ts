@@ -3,6 +3,8 @@ import { SignJWT, jwtVerify, type JWTPayload } from 'jose';
 export interface JwtClaims {
   userId: string;
   email: string;
+  /** Optional scope claim — `'ws'` marks short-lived WebSocket tickets. */
+  scope?: 'ws';
 }
 
 type JwtClaimsPayload = JwtClaims & JWTPayload;
@@ -27,6 +29,7 @@ export class JwtService {
     return {
       userId: payload['userId'] as string,
       email: payload['email'] as string,
+      scope: payload['scope'] as 'ws' | undefined,
     };
   }
 

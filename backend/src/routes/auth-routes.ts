@@ -296,6 +296,16 @@ export async function authRoutes(app: FastifyInstance, opts: AuthRoutesOptions):
     return reply.status(204).send();
   });
 
+  // POST /ws-ticket — exchange long-lived auth JWT for a 1-hour WS-only ticket.
+  // The WS handshake passes ?token=... in the URL, which leaks into access logs;
+  // the short TTL + scope:'ws' claim caps the blast radius if a ticket is grabbed.
+  // Client flow: call this right before opening the WS, discard ticket after.
+  app.post('/ws-ticket', { preHandler: authGuard }, async (request, reply) => {
+    const { userId, email } = request.user!;
+    const ticket = await jwtService.sign({ userId, email, scope: 'ws' }, '1h');
+    return reply.status(200).send({ ticket, expiresIn: 3600 });
+  });
+
   // GET /me — protected
   app.get('/me', { preHandler: authGuard }, async (request, reply) => {
     return reply.status(200).send({ user: request.user });

@@ -35,9 +35,7 @@ beforeAll(async () => {
 
   await db.collection('users').createIndex({ email: 1 }, { unique: true });
   await db.collection('magic_link_tokens').createIndex({ tokenHash: 1 });
-  await db
-    .collection('magic_link_tokens')
-    .createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await db.collection('magic_link_tokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
   TEST_ENV.MONGO_URI = mongod.getUri();
   rateLimiter = new EmailRateLimiter(5, 60 * 60 * 1000);
@@ -390,7 +388,11 @@ describe('GET /auth/google/callback (OAuth code flow)', () => {
     const jwtSvc = new JwtService(TEST_ENV.JWT_SECRET);
     // State JWT uses userId/email empty stubs — same as the route handler does
     const validState = await jwtSvc.sign(
-      { extensionId: 'testextid', userId: '', email: '' } as unknown as import('../auth/jwt-service.js').JwtClaims,
+      {
+        extensionId: 'testextid',
+        userId: '',
+        email: '',
+      } as unknown as import('../auth/jwt-service.js').JwtClaims,
       '5m',
     );
 
@@ -407,7 +409,7 @@ describe('GET /auth/google/callback (OAuth code flow)', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       }),
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
 
     const { buildApp: buildAppFresh } = await import('../app.js');
@@ -482,5 +484,50 @@ describe('GET /auth/me', () => {
       headers: { authorization: `Bearer ${expiredToken}` },
     });
     expect(res.statusCode).toBe(401);
+  });
+});
+
+// ── WS ticket exchange ────────────────────────────────────────────────────────
+describe('POST /auth/ws-ticket', () => {
+  async function getJwt(email = 'wsticket@example.com'): Promise<string> {
+    const { createHash, randomBytes } = await import('node:crypto');
+    const raw = randomBytes(32).toString('hex');
+    const hash = createHash('sha256').update(raw).digest('hex');
+    await db.collection('magic_link_tokens').insertOne({
+      tokenHash: hash,
+      email,
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      used: false,
+      createdAt: new Date(),
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/auth/magic-link/verify?token=${raw}`,
+    });
+    return res.json<{ token: string }>().token;
+  }
+
+  it('returns 401 without Bearer', async () => {
+    const res = await app.inject({ method: 'POST', url: '/auth/ws-ticket' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('returns a 1h scope:ws ticket with valid Bearer', async () => {
+    const jwt = await getJwt();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/ws-ticket',
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ ticket: string; expiresIn: number }>();
+    expect(body.expiresIn).toBe(3600);
+    expect(body.ticket.split('.').length).toBe(3); // valid JWS shape
+
+    const { JwtService } = await import('../auth/jwt-service.js');
+    const jwtSvc = new JwtService(TEST_ENV.JWT_SECRET);
+    const claims = await jwtSvc.verify(body.ticket);
+    expect(claims.email).toBe('wsticket@example.com');
+    expect(claims.scope).toBe('ws');
   });
 });
