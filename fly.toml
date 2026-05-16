@@ -1,0 +1,43 @@
+# Fly.io app config — Translate Voice backend.
+# Edit `app` to your fly app name after running `fly apps create <name>`.
+# Run `fly deploy` from the monorepo ROOT (this directory).
+
+app = "translate-voice-backend"
+primary_region = "sin"          # Singapore — lowest latency for VN/SEA users
+kill_signal = "SIGTERM"
+kill_timeout = "30s"            # matches main.ts SHUTDOWN_TIMEOUT_MS
+
+[build]
+  dockerfile = "backend/Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  # MAGIC_LINK_BASE_URL must be set via `fly secrets set MAGIC_LINK_BASE_URL=https://<app>.fly.dev`
+  # All other env vars (API keys, JWT_SECRET, MONGO_URI, POLAR_*) → set via secrets.
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "off"    # WebSocket sessions are long-lived; stop-on-idle drops connections
+  auto_start_machines = true
+  min_machines_running = 1      # always-on; 0 would cold-start the first user every morning
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 250
+
+  # Health check — Fastify exposes /health (verify path matches your route)
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"               # 256mb is the free-tier floor; 512 leaves headroom for VAD WASM + WS buffers
+  cpu_kind = "shared"
+  cpus = 1

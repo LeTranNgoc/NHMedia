@@ -1,0 +1,57 @@
+# Docker build context is the monorepo root (see backend/Dockerfile header).
+# Keep the image small — everything not strictly needed for the backend runtime
+# is excluded. This file applies whenever someone runs `docker build .` or
+# `fly deploy` from the repo root.
+
+# Dependencies — re-resolved inside the image
+**/node_modules
+**/.pnpm-store
+
+# Build outputs (sources are tsx-loaded at runtime; dist is not used)
+**/dist
+**/.output
+**/build
+**/coverage
+**/.nyc_output
+
+# Secrets — set via `fly secrets set` instead
+.env
+.env.*
+!.env.example
+**/secrets
+*.pem
+*.key
+gcp-tts-service-account.json
+
+# Front-end + non-backend workspaces (backend image doesn't need them)
+extension/
+docs/
+plans/
+scripts/
+
+# Tests — devDeps not installed in --prod anyway; this is defense in depth
+**/__tests__
+**/*.test.ts
+**/vitest.config.ts
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.log
+
+# Git
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# Claude / agent metadata (not needed in container)
+.claude/
+.claudex.lock
+.codex/
+.agents/
+AGENTS.md
+CLAUDE.md

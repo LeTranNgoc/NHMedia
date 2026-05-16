@@ -65,7 +65,10 @@ async function connectWs(url: string, timeoutMs = 3000): Promise<WebSocket> {
   });
 }
 
-async function waitForClose(ws: WebSocket, timeoutMs = 3000): Promise<{ code: number; reason: string }> {
+async function waitForClose(
+  ws: WebSocket,
+  timeoutMs = 3000,
+): Promise<{ code: number; reason: string }> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('WS close timeout')), timeoutMs);
     ws.once('close', (code, reason) => {
@@ -98,11 +101,15 @@ async function waitForAsrStarted(): Promise<void> {
     },
     { timeout: 2000, interval: 10 },
   );
-  // Flush a few microtask ticks so the `.then(() => asrStarted = true)`
-  // attached to the resolved mock promise runs before the test sends audio.
-  for (let i = 0; i < 3; i++) {
+  // Flush microtask + macrotask queues so the `.then(() => asrStarted = true)`
+  // and the WS message-arrival event loop both settle before the test sends
+  // audio. Under CPU load, fewer ticks left the audio test flaking ~25% —
+  // 10 setImmediate ticks + a 30ms event-loop sleep make the next ws.send()
+  // deterministically hit the asrStarted=true branch.
+  for (let i = 0; i < 10; i++) {
     await new Promise<void>((r) => setImmediate(r));
   }
+  await new Promise<void>((r) => setTimeout(r, 30));
 }
 
 beforeAll(async () => {
@@ -236,7 +243,7 @@ describe('WS message flow', () => {
     const msgPromise = waitForMessage(ws);
     mockTranscriptCb!({ text: 'hello', isFinal: false, ts: 500 });
 
-    const msg = await msgPromise as { type: string; text: string; isFinal: boolean; ts: number };
+    const msg = (await msgPromise) as { type: string; text: string; isFinal: boolean; ts: number };
     expect(msg.type).toBe('transcript');
     expect(msg.text).toBe('hello');
     expect(msg.isFinal).toBe(false);
@@ -278,7 +285,7 @@ describe('WS message flow', () => {
 
     const msgPromise = waitForMessage(ws);
     ws.send(JSON.stringify({ type: 'config', srcLang: 'zh', audioMode: 'voice-over' }));
-    const msg = await msgPromise as { type: string; code: string };
+    const msg = (await msgPromise) as { type: string; code: string };
 
     expect(msg.type).toBe('error');
     expect(msg.code).toBe('invalid_src_lang');
@@ -296,7 +303,8 @@ describe('WS message flow', () => {
 
     ws.send(JSON.stringify({ type: 'config', srcLang: 'en', audioMode: 'voice-over' }));
     await waitForAsrStarted();
-    const startCallsAfterConfig = (mockAsrProvider.start as ReturnType<typeof vi.fn>).mock.calls.length;
+    const startCallsAfterConfig = (mockAsrProvider.start as ReturnType<typeof vi.fn>).mock.calls
+      .length;
 
     ws.send(JSON.stringify({ type: 'flush' }));
     // flush triggers asr.stop() then asr.start() in a .then() chain.
@@ -372,7 +380,7 @@ describe('WS ASR error propagation', () => {
 
     const msgPromise = waitForMessage(ws);
     mockErrorCb!(new Error('Unauthorized'));
-    const msg = await msgPromise as { type: string; code: string };
+    const msg = (await msgPromise) as { type: string; code: string };
 
     expect(msg.type).toBe('error');
     expect(msg.code).toBe('asr_auth');
@@ -415,8 +423,9 @@ describe('WS backpressure', () => {
     await new Promise((r) => setTimeout(r, 300));
 
     const hasWarning = messages.some(
-      (m) => (m as { type: string; code: string }).type === 'warning' &&
-             (m as { type: string; code: string }).code === 'backpressure',
+      (m) =>
+        (m as { type: string; code: string }).type === 'warning' &&
+        (m as { type: string; code: string }).code === 'backpressure',
     );
     expect(hasWarning).toBe(true);
 
@@ -460,9 +469,7 @@ describe('WS backpressure', () => {
     await new Promise((r) => setTimeout(r, 100));
 
     // Empty interims must not be forwarded to client as transcript frames
-    const transcriptFrames = messages.filter(
-      (m) => (m as { type: string }).type === 'transcript',
-    );
+    const transcriptFrames = messages.filter((m) => (m as { type: string }).type === 'transcript');
     expect(transcriptFrames).toHaveLength(0);
 
     // BP should now be drained (counter = 0 from 8 empty-interim ACKs).
