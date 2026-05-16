@@ -8,11 +8,13 @@ import type {
 import type { OffscreenManager } from './offscreen-manager';
 import { TabCaptureHandler } from './tab-capture-handler';
 import { loadSettings, updateSettings } from '../shared/settings-store';
+import { loadSwState, saveSwState, clearSwState } from '../shared/sw-state-persistence';
 
 // Env vars injected at build time by WXT. Defaults keep local dev working —
 // matches backend .env.example PORT=3000.
 const WS_URL: string =
-  (typeof import.meta.env !== 'undefined' && (import.meta.env['WXT_WS_URL'] as string | undefined)) ||
+  (typeof import.meta.env !== 'undefined' &&
+    (import.meta.env['WXT_WS_URL'] as string | undefined)) ||
   'ws://localhost:3000/ws/translate';
 
 /**
@@ -38,6 +40,46 @@ export class MessageRouter {
 
   constructor(private readonly offscreen: OffscreenManager) {
     this.tabCapture = new TabCaptureHandler(offscreen);
+    // SW just woke (or boot) — restore last-known state from
+    // chrome.storage.session. If the offscreen document died with the SW,
+    // demote the status to 'idle' so the popup UI matches actual pipeline.
+    void this.restoreState();
+  }
+
+  private async restoreState(): Promise<void> {
+    const stored = await loadSwState();
+    // A message may have already mutated state between constructor and our
+    // storage.session resolve (e.g. popup.start during the same tick).
+    // In that case the live state wins — restoration is purely "if pristine."
+    if (this.activeTabId !== null || this.currentStatus !== 'idle') return;
+
+    this.activeTabId = stored.activeTabId;
+    this.currentStatus = stored.currentStatus;
+    this.detectedLang = stored.detectedLang;
+    this.ccSource = stored.ccSource;
+
+    // If the SW slept and woke, the offscreen document likely died too.
+    // Snap to 'idle' rather than report a live capturing status that no
+    // longer has a pipeline behind it.
+    if (this.currentStatus !== 'idle') {
+      const alive = await this.offscreen.isAlive();
+      if (!alive) {
+        this.activeTabId = null;
+        this.currentStatus = 'idle';
+        this.detectedLang = undefined;
+        this.ccSource = undefined;
+        await clearSwState();
+      }
+    }
+  }
+
+  private persistState(): void {
+    void saveSwState({
+      activeTabId: this.activeTabId,
+      currentStatus: this.currentStatus,
+      detectedLang: this.detectedLang,
+      ccSource: this.ccSource,
+    });
   }
 
   handle(
@@ -101,11 +143,13 @@ export class MessageRouter {
         this.currentStatus = 'idle';
         this.detectedLang = undefined;
         this.ccSource = undefined;
-        void this.tabCapture.stopCapture().catch((e) =>
-          console.error('[message-router] stopCapture failed:', e),
-        );
+        void this.tabCapture
+          .stopCapture()
+          .catch((e) => console.error('[message-router] stopCapture failed:', e));
         this.broadcastStatus();
         this.broadcastStatusBadge(false);
+        // Explicit user stop — wipe persisted state, don't restore on next wake.
+        void clearSwState();
         sendResponse({ ok: true });
         return false;
       }
@@ -141,9 +185,7 @@ export class MessageRouter {
       case 'pipeline.frame': {
         // Relay raw frames to the active YouTube tab (legacy path).
         if (this.activeTabId !== null) {
-          void chrome.tabs
-            .sendMessage(this.activeTabId, msg)
-            .catch(() => {});
+          void chrome.tabs.sendMessage(this.activeTabId, msg).catch(() => {});
         }
         return false;
       }
@@ -228,11 +270,13 @@ export class MessageRouter {
 
       case 'caption.chunk': {
         // Forward caption chunk from content script to offscreen pipeline.
-        void this.offscreen.sendToOffscreen({
-          type: 'caption.chunk',
-          text: msg.text,
-          ts: msg.ts,
-        }).catch(() => {});
+        void this.offscreen
+          .sendToOffscreen({
+            type: 'caption.chunk',
+            text: msg.text,
+            ts: msg.ts,
+          })
+          .catch(() => {});
         return false;
       }
 
@@ -245,9 +289,7 @@ export class MessageRouter {
         // 5s dedupe stays as defense in depth.
         void this.offscreen
           .sendToOffscreen({ type: 'audio.pause-capture' })
-          .catch((e) =>
-            console.warn('[message-router] audio.pause-capture failed:', e),
-          );
+          .catch((e) => console.warn('[message-router] audio.pause-capture failed:', e));
         return false;
       }
 
@@ -264,7 +306,10 @@ export class MessageRouter {
 
       default: {
         const _exhaustive: never = msg;
-        console.warn('[message-router] unhandled message type:', (_exhaustive as InboundSwMsg).type);
+        console.warn(
+          '[message-router] unhandled message type:',
+          (_exhaustive as InboundSwMsg).type,
+        );
         return false;
       }
     }
@@ -282,9 +327,11 @@ export class MessageRouter {
     // Send to popup (all extension pages receive runtime messages).
     chrome.runtime.sendMessage(statusMsg).catch(() => {});
     // Also update status badge on content script.
-    this.broadcastStatusBadge(
-      this.activeTabId !== null && this.currentStatus !== 'idle',
-    );
+    this.broadcastStatusBadge(this.activeTabId !== null && this.currentStatus !== 'idle');
+    // Persist for SW-restart resilience. broadcastStatus is the funnel for
+    // every state change worth surviving sleep — wiring here keeps callers
+    // unchanged and guarantees no missed save.
+    this.persistState();
   }
 
   private broadcastStatusBadge(enabled: boolean): void {

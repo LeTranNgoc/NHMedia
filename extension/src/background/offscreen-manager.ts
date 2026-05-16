@@ -47,6 +47,11 @@ export class OffscreenManager {
     await chrome.runtime.sendMessage(msg);
   }
 
+  /** Public version of `exists` — used to detect "offscreen died with SW" after wake. */
+  async isAlive(): Promise<boolean> {
+    return this.exists();
+  }
+
   private async exists(): Promise<boolean> {
     // Chrome 116+ exposes hasDocument(); fall back to false on older builds.
     if (typeof chrome.offscreen.hasDocument === 'function') {
