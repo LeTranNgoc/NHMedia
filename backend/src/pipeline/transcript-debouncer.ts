@@ -2,7 +2,16 @@ import type { TranscriptEvent } from '../providers/asr/asr-provider-interface.js
 
 export type DebouncedTranscriptCallback = (text: string) => void;
 
-const INTERIM_DEBOUNCE_MS = 400;
+/**
+ * Interim debounce window in ms.
+ * - With Azure Translator (F0 = 2M chars/hour): 400ms is comfortable.
+ * - With Gemini free tier (20 RPM): need at least 3000ms to stay under quota,
+ *   but at that rate you've effectively reverted to finals-only.
+ * - Set via env INTERIM_DEBOUNCE_MS to override. 0 = finals-only mode
+ *   (interims ignored entirely).
+ */
+const INTERIM_DEBOUNCE_MS = Number(process.env['INTERIM_DEBOUNCE_MS'] ?? 400);
+const INTERIMS_ENABLED = INTERIM_DEBOUNCE_MS > 0;
 
 /**
  * TranscriptDebouncer — collapses rapid interim ASR results into stable chunks.
@@ -39,6 +48,9 @@ export class TranscriptDebouncer {
       this._emit(text);
       return;
     }
+
+    // Finals-only fallback for low-quota providers (Gemini 20 RPM).
+    if (!INTERIMS_ENABLED) return;
 
     // Interim: hold the latest text, debounce-emit after the window. If a
     // newer interim arrives in the window, replace + reset the timer.
