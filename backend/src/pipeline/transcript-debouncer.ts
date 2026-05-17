@@ -2,16 +2,26 @@ import type { TranscriptEvent } from '../providers/asr/asr-provider-interface.js
 
 export type DebouncedTranscriptCallback = (text: string) => void;
 
+const INTERIM_DEBOUNCE_MS = 400;
+
 /**
  * TranscriptDebouncer — collapses rapid interim ASR results into stable chunks.
  *
  * Rules:
- * - Interim: schedule emit after 300ms; reschedule if a new interim arrives within the window.
+ * - Interim: schedule emit after INTERIM_DEBOUNCE_MS; reschedule on each new
+ *   interim so we only translate the latest stable phrase. Cancelled when a
+ *   final arrives in the same window.
  * - isFinal=true: emit immediately, cancel any pending timer.
- * - Drop interims that are a substring of the previously emitted text (duplicate prevention).
+ * - Drop a new emit if its text is already a substring of the last emitted
+ *   text (avoid re-translating a phrase that was already a final).
+ *
+ * Trade-off: emitting interims = more translate RPS. Azure F0 (2M chars/hour)
+ * handles it fine. Gemini free tier (20 RPM) will throttle — switch
+ * TRANSLATE_PROVIDER=azure when running with interim emits.
  */
 export class TranscriptDebouncer {
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private pendingText = '';
   private lastEmittedText = '';
   private readonly cb: DebouncedTranscriptCallback;
 
@@ -24,20 +34,30 @@ export class TranscriptDebouncer {
     if (!text) return;
     if (this.lastEmittedText && this.lastEmittedText.includes(text)) return;
 
-    // Only emit on FINAL transcripts. Translating interims spammed Gemini at
-    // ~3 RPS (well over the 20 RPM free-tier limit). Finals arrive every
-    // 2-6s during continuous speech → ~10-30 RPM, fits the limit and adds
-    // ~1s latency over interim-based translation. Worth the trade for free tier.
     if (event.isFinal) {
       this._cancelPending();
       this._emit(text);
+      return;
     }
-    // Interim: ignored (debouncer is now finals-only).
+
+    // Interim: hold the latest text, debounce-emit after the window. If a
+    // newer interim arrives in the window, replace + reset the timer.
+    this.pendingText = text;
+    this._cancelPending();
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      const candidate = this.pendingText;
+      this.pendingText = '';
+      if (candidate && !this.lastEmittedText.includes(candidate)) {
+        this._emit(candidate);
+      }
+    }, INTERIM_DEBOUNCE_MS);
   }
 
   /** Cancel any pending timer and discard accumulated text. Call on session close. */
   flush(): void {
     this._cancelPending();
+    this.pendingText = '';
     this.lastEmittedText = '';
   }
 

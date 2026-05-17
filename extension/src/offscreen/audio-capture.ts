@@ -61,7 +61,7 @@ export class AudioCapture {
           chromeMediaSource: 'tab',
           chromeMediaSourceId: streamId,
         },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any, // Chrome-specific 'mandatory' key not in standard TS types
       video: false,
     };
@@ -86,7 +86,11 @@ export class AudioCapture {
     // tab output into the stream, so without this route the user hears silence.
     this.source.connect(this.workletNode);
     this.playbackGain = this.ctx.createGain();
-    this.playbackGain.gain.value = 1; // full volume by default
+    // Source ducked to 0.4 so the Vietnamese TTS overlay sits clearly on top —
+    // user explicitly asked for "giảm source / tăng dub". TTS playback runs
+    // through a separate AudioContext at its native gain (~1.0), net ratio is
+    // 0.4 source : 1.0 TTS.
+    this.playbackGain.gain.value = 0.4;
     this.source.connect(this.playbackGain);
     this.playbackGain.connect(this.ctx.destination);
 
