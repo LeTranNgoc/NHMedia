@@ -38,7 +38,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '..');
 const EXT_DIR = path.join(ROOT, 'extension');
 const BUILD_DIR = path.join(EXT_DIR, '.output', 'chrome-mv3');
-const PROFILE_DIR = path.join(os.tmpdir(), 'tv-chrome-ext-profile');
+const DEFAULT_PROFILE_DIR = path.join(os.tmpdir(), 'tv-chrome-ext-profile');
 
 // ── ANSI ──────────────────────────────────────────────────────────────────────
 const RED = '\x1b[31m';
@@ -54,7 +54,14 @@ const OPEN_URL = args.url || 'https://www.youtube.com/watch?v=jNQXAC9IVRw';
 const API_BASE = args.api || 'http://localhost:3000';
 const WS_URL = args.ws || 'ws://localhost:3000/ws/translate';
 const SHOULD_BUILD = args['no-build'] !== true;
-const KEEP_PROFILE = args['keep-profile'] === true;
+// --profile-dir=<path> uses a user-supplied folder (persistent across runs);
+// --keep-profile keeps the throwaway temp profile.
+// No flag = default throwaway profile, wiped on every launch.
+const CUSTOM_PROFILE_DIR = typeof args['profile-dir'] === 'string' ? args['profile-dir'] : null;
+const KEEP_PROFILE = args['keep-profile'] === true || CUSTOM_PROFILE_DIR !== null;
+const PROFILE_DIR = CUSTOM_PROFILE_DIR
+  ? path.resolve(CUSTOM_PROFILE_DIR)
+  : DEFAULT_PROFILE_DIR;
 
 function parseArgs(argv) {
   const out = {};
