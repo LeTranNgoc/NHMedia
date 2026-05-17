@@ -88,59 +88,67 @@ export class PipelineOrchestrator {
   }
 
   private async _processChunk(srcText: string): Promise<void> {
+    const chunkPreview = srcText.length > 40 ? srcText.slice(0, 40) + '...' : srcText;
+    console.info(`[pipeline] chunk in: "${chunkPreview}" (${srcText.length} chars)`);
+
     // ── Translate (with cache) ───────────────────────────────────────────────
     let translatedText: string;
 
     const cached = this.cache.get(srcText, this.srcLang);
     if (cached !== undefined) {
       translatedText = cached;
+      console.info(`[pipeline] translate: cache hit`);
     } else {
+      const t0 = Date.now();
       try {
-        translatedText = await this.translateProvider.translate(srcText, this.srcLang, this.targetLang);
+        translatedText = await this.translateProvider.translate(
+          srcText,
+          this.srcLang,
+          this.targetLang,
+        );
+        console.info(
+          `[pipeline] translate: ${Date.now() - t0}ms → "${translatedText.slice(0, 40)}"`,
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        console.error(`[pipeline] translate_fail (${Date.now() - t0}ms): ${message}`);
         this.emitter.emitError('translate_fail', message);
-        // Don't emit source as "translation" — confuses client (looks like English
-        // came back as Vietnamese). Error frame is enough; skip TTS too.
         return;
       }
 
       if (!translatedText) {
+        console.warn('[pipeline] translate returned empty string');
         this.emitter.emitError('translate_empty', 'Translation returned empty string');
         return;
       }
 
       this.cache.set(srcText, this.srcLang, translatedText);
       // Bill on INPUT chars to match Azure Translator / Cloud Translate pricing.
-      // Cached translations are skipped (deduplication).
       this.onTranslateComplete?.(srcText.length);
     }
 
-    // ── Emit translation subtitle frame ─────────────────────────────────────
     this.emitter.emitTranslation(translatedText);
 
-    // ── Backpressure check ───────────────────────────────────────────────────
     if (this.ttsQueueDepth >= TTS_QUEUE_BACKPRESSURE_LIMIT) {
-      // Drop this TTS chunk — warn and continue (subtitle already sent)
-      this.emitter.emitError(
-        'tts_backpressure',
-        'TTS queue full — audio frame dropped',
-      );
+      console.warn(`[pipeline] tts_backpressure: queue=${this.ttsQueueDepth} — dropping`);
+      this.emitter.emitError('tts_backpressure', 'TTS queue full — audio frame dropped');
       return;
     }
 
     // ── TTS ──────────────────────────────────────────────────────────────────
     this.ttsQueueDepth++;
+    const t1 = Date.now();
     try {
       const { audio, format } = await this.ttsProvider.synthesize(translatedText, {
         lang: this.targetLang as SupportedLang,
         gender: 'female',
       });
+      console.info(`[pipeline] tts: ${Date.now() - t1}ms → ${audio.length} bytes ${format}`);
       this.emitter.emitAudio(audio, format);
       this.onTtsComplete?.(translatedText.length);
     } catch (err) {
-      // TTS fail: subtitle already emitted, skip audio
       const message = err instanceof Error ? err.message : String(err);
+      console.error(`[pipeline] tts_fail (${Date.now() - t1}ms): ${message}`);
       this.emitter.emitError('tts_fail', message);
     } finally {
       this.ttsQueueDepth--;
