@@ -53,6 +53,16 @@ const envSchema = z.object({
    *  (single-process only; multi-instance prod MUST set this — Upstash free
    *  tier covers ~10k commands/day, enough for closed beta sign-up volume). */
   REDIS_URL: z.string().optional().default(''),
+  /** Skip server-side TTS synthesis. When true (default), the orchestrator
+   *  only emits the translation text frame — the extension speaks it via the
+   *  browser's speechSynthesis API. Zero TTS API cost, ~300-500ms lower
+   *  latency. Set false when targeting browsers/OS without a vi-VN voice
+   *  and you want the Cloud/Azure TTS audio fallback. */
+  BACKEND_TTS_DISABLED: z
+    .string()
+    .optional()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1'),
 });
 
 export type Env = z.infer<typeof envSchema>;

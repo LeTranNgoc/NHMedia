@@ -39,6 +39,9 @@ export interface RelayServerOptions {
   azureSpeechRegion?: string;
   /** UsageTracker instance — required for usage gate + mid-stream tick */
   usageTracker?: UsageTracker;
+  /** When true, orchestrator emits translation text but skips TTS synthesis.
+   *  Extension speaks via browser speechSynthesis instead. */
+  backendTtsDisabled?: boolean;
 }
 
 /** Choose translate provider based on env config. Falls back to Gemini when Azure key absent. */
@@ -66,6 +69,7 @@ export async function registerRelayServer(
     azureSpeechKey,
     azureSpeechRegion,
     usageTracker,
+    backendTtsDisabled,
   } = opts;
 
   app.get('/ws/translate', { websocket: true }, async (socket: WebSocket, request) => {
@@ -348,6 +352,7 @@ export async function registerRelayServer(
           ttsProvider,
           srcLang,
           targetLang,
+          ttsDisabled: backendTtsDisabled === true,
           onTranslateComplete: usageTracker
             ? (chars) => {
                 usageTracker.tick(userId, chars, 'translateChars');

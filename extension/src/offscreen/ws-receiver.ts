@@ -9,9 +9,17 @@
 
 import type { WsFrame } from './ws-client';
 import type { AudioPlaybackQueue } from './audio-playback-queue';
+import type { WebSpeechTtsQueue } from './web-speech-tts-queue';
 
 export class WsReceiver {
-  constructor(private readonly queue: AudioPlaybackQueue) {}
+  constructor(
+    private readonly queue: AudioPlaybackQueue,
+    /** Optional client-side TTS. When provided AND vi-VN voice exists, the
+     *  translation frame is spoken locally and the server-side audio frame
+     *  becomes redundant (set BACKEND_TTS_DISABLED=true on the backend to
+     *  stop paying for Cloud TTS). */
+    private readonly webSpeech?: WebSpeechTtsQueue,
+  ) {}
 
   /**
    * Handle one incoming WS frame.
@@ -25,6 +33,10 @@ export class WsReceiver {
           console.warn('[ws-receiver] audio frame missing data field');
           return;
         }
+        // If web-speech is actively speaking, skip server audio — the two
+        // would overlap. Server audio is the fallback when web-speech
+        // unsupported.
+        if (this.webSpeech?.isSupported()) return;
         void this.queue.enqueue(data);
         break;
       }
@@ -43,10 +55,14 @@ export class WsReceiver {
       }
 
       case 'translation': {
+        const text = typeof frame.text === 'string' ? frame.text : '';
+        // Speak locally — zero server-TTS cost, ~50-200ms latency vs the
+        // 300-500ms server pipeline + audio download.
+        this.webSpeech?.speak(text);
         chrome.runtime
           .sendMessage({
             type: 'pipeline.translation',
-            text: frame.text ?? '',
+            text,
           })
           .catch(() => {});
         break;

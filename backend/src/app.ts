@@ -50,6 +50,7 @@ export interface AppEnv {
   APP_RELEASE?: string;
   MAX_ACCOUNTS_PER_FINGERPRINT?: number;
   REDIS_URL?: string;
+  BACKEND_TTS_DISABLED?: boolean;
 }
 
 export interface BuildAppOptions {
@@ -206,6 +207,7 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
     azureSpeechKey: env.AZURE_SPEECH_KEY ?? '',
     azureSpeechRegion: env.AZURE_SPEECH_REGION ?? 'southeastasia',
     usageTracker,
+    backendTtsDisabled: env.BACKEND_TTS_DISABLED ?? false,
   });
 
   return app;

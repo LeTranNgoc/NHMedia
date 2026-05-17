@@ -6,6 +6,7 @@ import { WsClient } from './ws-client';
 import type { WsFrame } from './ws-client';
 import { AudioPlaybackQueue } from './audio-playback-queue';
 import { WsReceiver } from './ws-receiver';
+import { WebSpeechTtsQueue } from './web-speech-tts-queue';
 
 export interface PipelineConfig {
   srcLang: string;
@@ -49,6 +50,7 @@ export class AudioPipelineController {
   private playbackQueue: AudioPlaybackQueue | null = null;
   private wsReceiver: WsReceiver | null = null;
   private playbackCtx: AudioContext | null = null;
+  private webSpeech: WebSpeechTtsQueue | null = null;
 
   private tickTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -56,8 +58,7 @@ export class AudioPipelineController {
   private stats = { ticks: 0, chunksRead: 0, speech: 0, sent: 0, backpressure: 0 };
 
   /** Samples per chunk = 100 ms × 16 kHz = 1600 */
-  private readonly CHUNK_SAMPLES =
-    AUDIO_CONFIG.CHUNK_BYTE_SIZE / 2; // Int16 = 2 bytes/sample
+  private readonly CHUNK_SAMPLES = AUDIO_CONFIG.CHUNK_BYTE_SIZE / 2; // Int16 = 2 bytes/sample
 
   async start(payload: StartPayload): Promise<void> {
     if (this.state !== 'idle') {
@@ -96,7 +97,18 @@ export class AudioPipelineController {
       }
       console.info('[pipeline] playbackCtx state after resume:', this.playbackCtx.state);
       this.playbackQueue = new AudioPlaybackQueue(this.playbackCtx);
-      this.wsReceiver = new WsReceiver(this.playbackQueue);
+      // Browser-native TTS — zero server cost when a vi-VN voice is present.
+      // Falls back transparently to AudioPlaybackQueue (server audio frames)
+      // when the OS lacks a Vietnamese voice — see WsReceiver.handleFrame.
+      this.webSpeech = new WebSpeechTtsQueue();
+      console.info(
+        `[pipeline] web-speech tts: ${
+          this.webSpeech.isSupported()
+            ? `enabled (voice="${this.webSpeech.voiceName()}")`
+            : 'unsupported — using server TTS audio frames'
+        }`,
+      );
+      this.wsReceiver = new WsReceiver(this.playbackQueue, this.webSpeech);
 
       // 4. WS — onFrame now routes through WsReceiver
       this.ws = new WsClient({
@@ -105,8 +117,7 @@ export class AudioPipelineController {
         srcLang: config.srcLang,
         onFrame: (frame) => this.handleFrame(frame),
         onFatalError: (reason) => this.handleFatalError(reason),
-        onReconnecting: (attempt) =>
-          console.info(`[pipeline] WS reconnecting, attempt ${attempt}`),
+        onReconnecting: (attempt) => console.info(`[pipeline] WS reconnecting, attempt ${attempt}`),
       });
       this.ws.connect();
 
@@ -161,19 +172,21 @@ export class AudioPipelineController {
     this.clearTick();
 
     await this.capture.stop().catch((e) =>
-      chrome.runtime.sendMessage({
-        type: 'sw.telemetry.error',
-        context: 'pauseAudioCapture.stop',
-        error: String(e),
-      }).catch(() => {}),
+      chrome.runtime
+        .sendMessage({
+          type: 'sw.telemetry.error',
+          context: 'pauseAudioCapture.stop',
+          error: String(e),
+        })
+        .catch(() => {}),
     );
     this.capture = null;
     this.ringBuffer = null;
 
     if (this.vad) {
-      await this.vad.dispose().catch((e) =>
-        console.error('[pipeline] vad dispose error during pause:', e),
-      );
+      await this.vad
+        .dispose()
+        .catch((e) => console.error('[pipeline] vad dispose error during pause:', e));
       this.vad = null;
     }
   }
@@ -246,10 +259,11 @@ export class AudioPipelineController {
 
     this.stats.ticks++;
     if (this.stats.ticks % 50 === 0) {
-      console.info(
-        '[pipeline] stats',
-        { ...this.stats, wsBuffered: this.ws?.bufferedAmount ?? 0, vadFallback: this.vad?.isFallback },
-      );
+      console.info('[pipeline] stats', {
+        ...this.stats,
+        wsBuffered: this.ws?.bufferedAmount ?? 0,
+        vadFallback: this.vad?.isFallback,
+      });
     }
 
     const chunk = this.ringBuffer?.read(this.CHUNK_SAMPLES);
@@ -302,25 +316,31 @@ export class AudioPipelineController {
     this.playbackQueue?.destroy();
     this.playbackQueue = null;
     this.wsReceiver = null;
+    this.webSpeech?.destroy();
+    this.webSpeech = null;
 
     if (this.playbackCtx) {
       await this.playbackCtx.close().catch((e) =>
-        chrome.runtime.sendMessage({
-          type: 'sw.telemetry.error',
-          context: 'playbackCtx.close',
-          error: String(e),
-        }).catch(() => {}),
+        chrome.runtime
+          .sendMessage({
+            type: 'sw.telemetry.error',
+            context: 'playbackCtx.close',
+            error: String(e),
+          })
+          .catch(() => {}),
       );
       this.playbackCtx = null;
     }
 
     if (this.capture) {
       await this.capture.stop().catch((e) =>
-        chrome.runtime.sendMessage({
-          type: 'sw.telemetry.error',
-          context: 'capture.stop',
-          error: String(e),
-        }).catch(() => {}),
+        chrome.runtime
+          .sendMessage({
+            type: 'sw.telemetry.error',
+            context: 'capture.stop',
+            error: String(e),
+          })
+          .catch(() => {}),
       );
       this.capture = null;
     }
@@ -331,9 +351,7 @@ export class AudioPipelineController {
     }
 
     if (this.vad) {
-      await this.vad.dispose().catch((e) =>
-        console.error('[pipeline] vad dispose error:', e),
-      );
+      await this.vad.dispose().catch((e) => console.error('[pipeline] vad dispose error:', e));
       this.vad = null;
     }
 

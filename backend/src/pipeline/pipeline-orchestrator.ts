@@ -16,6 +16,9 @@ export interface PipelineOrchestratorOptions {
   srcLang: string;
   /** Target translation language code. Defaults to 'vi' for backward compatibility. */
   targetLang?: string;
+  /** When true, skip TTS synthesis entirely — only emit the translation text
+   *  frame. Extension speaks it via browser speechSynthesis. Default false. */
+  ttsDisabled?: boolean;
   /** Called after a successful translation with the char count of the translated text. */
   onTranslateComplete?: (chars: number) => void;
   /** Called after a successful TTS synthesis with the char count of the text fed to TTS. */
@@ -37,6 +40,7 @@ export class PipelineOrchestrator {
   private readonly ttsProvider: TTSProvider;
   private readonly srcLang: string;
   private readonly targetLang: string;
+  private readonly ttsDisabled: boolean;
 
   /** Tracks how many TTS jobs are currently in flight */
   private ttsQueueDepth = 0;
@@ -50,6 +54,7 @@ export class PipelineOrchestrator {
     this.ttsProvider = opts.ttsProvider;
     this.srcLang = opts.srcLang;
     this.targetLang = opts.targetLang ?? 'vi';
+    this.ttsDisabled = opts.ttsDisabled ?? false;
     this.onTranslateComplete = opts.onTranslateComplete;
     this.onTtsComplete = opts.onTtsComplete;
     this.chunker = new SentenceChunker();
@@ -128,6 +133,11 @@ export class PipelineOrchestrator {
     }
 
     this.emitter.emitTranslation(translatedText);
+
+    // Browser-native TTS path — extension speaks the translation locally via
+    // speechSynthesis. Backend skips Cloud TTS entirely, saving char quota
+    // and removing the audio-frame round-trip from the latency budget.
+    if (this.ttsDisabled) return;
 
     if (this.ttsQueueDepth >= TTS_QUEUE_BACKPRESSURE_LIMIT) {
       console.warn(`[pipeline] tts_backpressure: queue=${this.ttsQueueDepth} — dropping`);
