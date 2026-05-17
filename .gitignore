@@ -30,3 +30,5 @@ plans/
 extension/public/vad/silero-vad.onnx
 # ONNX Runtime wasm binaries (~38MB) — copied by setup from node_modules
 extension/public/ort/
+# Chrome dev profile dir from `pnpm chrome:extension --profile-dir=...`
+.chrome-profile/
