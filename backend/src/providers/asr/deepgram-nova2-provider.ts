@@ -97,7 +97,7 @@ export class DeepgramNova2Provider implements ASRProvider {
       language: opts.srcLang,
       interim_results: 'true',
       smart_format: 'true',
-      endpointing: '100',
+      endpointing: '50',
       Authorization: `Token ${this.apiKey}`,
     } as Parameters<typeof this.client.listen.v1.connect>[0]);
 

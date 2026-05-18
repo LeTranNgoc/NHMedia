@@ -38,7 +38,10 @@ async function main(): Promise<void> {
       `AZURE_TRANSLATOR=${keyStatus(env.AZURE_TRANSLATOR_KEY)} ` +
       `DEEPGRAM=${keyStatus(env.DEEPGRAM_API_KEY)} ` +
       `INTERIM_DEBOUNCE_MS=${process.env['INTERIM_DEBOUNCE_MS'] ?? '(default)'} ` +
-      `BACKEND_TTS_DISABLED=${env.BACKEND_TTS_DISABLED}`,
+      `BACKEND_TTS_DISABLED=${env.BACKEND_TTS_DISABLED} ` +
+      `LIMITS=[sec=${env.FREE_TIER_LIMIT_SECONDS} ` +
+      `translate=${env.FREE_TIER_LIMIT_TRANSLATE_CHARS} ` +
+      `tts=${env.FREE_TIER_LIMIT_TTS_CHARS}]`,
   );
 
   // Init Sentry BEFORE anything else so boot-time errors are captured.
