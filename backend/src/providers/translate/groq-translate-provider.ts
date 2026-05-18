@@ -1,9 +1,13 @@
 import type { TranslateProvider } from './translate-provider-interface.js';
 
 const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'llama-3.1-8b-instant'; // 30 RPM free, ~300-500ms latency
+const DEFAULT_GROQ_MODEL = 'llama-3.1-8b-instant'; // 30 RPM, 6K RPD, fastest
 const TRANSLATE_TIMEOUT_MS = 5000;
 const TEMPERATURE = 0.2;
+// One quick retry on 429 keeps the real-time pipeline alive across transient
+// throttles. Groq free tier is 30 RPM — Deepgram finals can briefly burst past
+// it. >600ms wait and the dubbing lag becomes audibly bad.
+const RETRY_429_DELAY_MS = 350;
 
 const TARGET_LANG_NAMES: Record<string, string> = {
   vi: 'Vietnamese',
@@ -18,6 +22,10 @@ const TARGET_LANG_NAMES: Record<string, string> = {
 
 export interface GroqTranslateProviderOptions {
   apiKey: string;
+  /** Override the default model. Each Groq model has its OWN daily quota so the
+   *  chain can include multiple Groq providers (8b → 70b → gemma) to multiply
+   *  effective free capacity. */
+  model?: string;
 }
 
 /**
@@ -32,12 +40,14 @@ export interface GroqTranslateProviderOptions {
  */
 export class GroqTranslateProvider implements TranslateProvider {
   private readonly apiKey: string;
+  private readonly model: string;
 
   constructor(opts: GroqTranslateProviderOptions) {
     if (!opts.apiKey) {
       throw new Error('GroqTranslateProvider: apiKey is required');
     }
     this.apiKey = opts.apiKey;
+    this.model = opts.model ?? DEFAULT_GROQ_MODEL;
   }
 
   async translate(srcText: string, srcLang: string, targetLang: string): Promise<string> {
@@ -57,6 +67,25 @@ export class GroqTranslateProvider implements TranslateProvider {
 
     const userPrompt = `<user_text>${sanitized}</user_text>`;
 
+    // Up to 2 attempts: original + 1 backoff on 429. Honours Retry-After when
+    // present, else falls back to RETRY_429_DELAY_MS.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await this._call(systemPrompt, userPrompt);
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        const is429 = msg.includes('(429)');
+        if (!is429 || attempt === 1) throw err;
+        console.warn(`[groq] 429 — retrying in ${RETRY_429_DELAY_MS}ms`);
+        await new Promise((r) => setTimeout(r, RETRY_429_DELAY_MS));
+      }
+    }
+    throw lastErr;
+  }
+
+  private async _call(systemPrompt: string, userPrompt: string): Promise<string> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), TRANSLATE_TIMEOUT_MS);
 
@@ -68,7 +97,7 @@ export class GroqTranslateProvider implements TranslateProvider {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: GROQ_MODEL,
+          model: this.model,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt },
@@ -93,7 +122,6 @@ export class GroqTranslateProvider implements TranslateProvider {
         choices?: Array<{ message?: { content?: string } }>;
       };
       const text = data.choices?.[0]?.message?.content?.trim() ?? '';
-      // Strip surrounding wrapper if model echoed it.
       return text.replace(/^<user_text>|<\/user_text>$/gi, '').trim();
     } finally {
       clearTimeout(timeoutId);

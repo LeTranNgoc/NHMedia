@@ -64,16 +64,24 @@ export class GeminiFlashProvider implements TranslateProvider {
     const sanitized = srcText.replace(/<\/?user_text>/gi, '');
     const prompt = `<user_text>${sanitized}</user_text>`;
 
-    // Free tier hits 429 at 15 RPM. One retry after parsed retryDelay (or 2s fallback)
-    // recovers from minor bursts without bubbling translate_fail to the client.
-    // Second 429 → bubble up so caller surfaces to user.
+    // Free tier 429 has two flavors:
+    //   - Per-minute throttle: small retryDelay (≤2s) → wait + retry once.
+    //   - Per-day quota exhausted: retryDelay ~59s + quotaId contains "PerDay" →
+    //     bubble up IMMEDIATELY so the provider chain falls over to Groq. Sleeping
+    //     ~60s here blocks the pipeline for nothing (next call will 429 again).
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         return await this._callOnce(model, prompt);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (attempt === 0 && msg.includes('429')) {
+          if (msg.includes('PerDay')) {
+            throw new Error('Gemini: per-day quota exhausted (429)');
+          }
           const retryMs = this._parseRetryDelayMs(msg) ?? 2000;
+          if (retryMs > 2000) {
+            throw new Error(`Gemini: 429 with retryDelay=${retryMs}ms exceeds cap — bubble up`);
+          }
           await new Promise((r) => setTimeout(r, retryMs));
           continue;
         }
