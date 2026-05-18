@@ -113,13 +113,17 @@ export interface CueListenerOpts {
  *   2. The track YouTube is currently displaying (mode === 'showing')
  *   3. First textTrack in the list (last-resort fallback)
  *
- * Does NOT mutate `track.mode` — YouTube controls visibility. Setting it to
- * 'hidden' would conflict with the user's CC toggle on the YouTube player.
+ * Auto-enables cue events: if the picked track is in 'disabled' mode (user
+ * hasn't clicked YT's CC button), flip it to 'hidden' so the cuechange events
+ * fire without YT rendering its own subtitle overlay (we use our own). The
+ * original mode is restored on cleanup so YT's button state stays consistent
+ * after the extension stops.
  *
  * Returns a cleanup function to remove the listener.
  */
 export function startCueListener(video: HTMLVideoElement, opts: CueListenerOpts): () => void {
   let track: TextTrack | null = null;
+  let originalMode: TextTrackMode | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let removed = false;
 
@@ -148,6 +152,14 @@ export function startCueListener(video: HTMLVideoElement, opts: CueListenerOpts)
 
     if (found) {
       track = found;
+      originalMode = found.mode;
+      // Auto-activate cuechange events. 'hidden' fires cues without rendering
+      // YT's own subtitles — perfect for our overlay. Skip when already
+      // 'showing' (user manually enabled CC) to avoid overriding their choice.
+      if (found.mode === 'disabled') {
+        found.mode = 'hidden';
+        console.info(`[cc-reader] auto-enabled hidden mode for cuechange (was disabled)`);
+      }
       track.addEventListener('cuechange', handler);
       console.info(
         `[cc-reader] attached cuechange — lang=${found.language || '(unknown)'} mode=${found.mode}`,
@@ -175,7 +187,13 @@ export function startCueListener(video: HTMLVideoElement, opts: CueListenerOpts)
     }
     if (track) {
       track.removeEventListener('cuechange', handler);
+      // Restore YT's original mode so its CC button state stays consistent
+      // for the next session / when extension toggles off.
+      if (originalMode !== null && track.mode !== originalMode) {
+        track.mode = originalMode;
+      }
       track = null;
+      originalMode = null;
     }
   };
 }
