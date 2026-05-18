@@ -4,8 +4,10 @@ import { LRUCache } from 'lru-cache';
 const MAX_ENTRIES = 1000;
 
 /**
- * TranslationCache — per-session LRU cache (max 1000 entries).
- * Key = sha256(srcText + srcLang) so same text in different source langs are distinct.
+ * TranslationCache — per-session LRU. Key = sha256(normalized srcText +
+ * srcLang + targetLang). Whitespace-normalized so " Hello  world " hits
+ * the same entry as "Hello world"; case + punctuation preserved so proper
+ * nouns and meaningful punctuation aren't conflated.
  */
 export class TranslationCache {
   private readonly cache: LRUCache<string, string>;
@@ -14,19 +16,18 @@ export class TranslationCache {
     this.cache = new LRUCache<string, string>({ max: maxSize });
   }
 
-  get(srcText: string, srcLang: string): string | undefined {
-    return this.cache.get(this._key(srcText, srcLang));
+  get(srcText: string, srcLang: string, targetLang = 'vi'): string | undefined {
+    return this.cache.get(this._key(srcText, srcLang, targetLang));
   }
 
-  set(srcText: string, srcLang: string, translated: string): void {
-    this.cache.set(this._key(srcText, srcLang), translated);
+  set(srcText: string, srcLang: string, translated: string, targetLang = 'vi'): void {
+    this.cache.set(this._key(srcText, srcLang, targetLang), translated);
   }
 
-  has(srcText: string, srcLang: string): boolean {
-    return this.cache.has(this._key(srcText, srcLang));
+  has(srcText: string, srcLang: string, targetLang = 'vi'): boolean {
+    return this.cache.has(this._key(srcText, srcLang, targetLang));
   }
 
-  /** Clear all entries — call on session close to free memory. */
   clear(): void {
     this.cache.clear();
   }
@@ -35,8 +36,12 @@ export class TranslationCache {
     return this.cache.size;
   }
 
-  private _key(srcText: string, srcLang: string): string {
-    // '\x00' separator prevents ("abc","de") colliding with ("abcd","e")
-    return createHash('sha256').update(srcText + '\x00' + srcLang).digest('hex');
+  private _key(srcText: string, srcLang: string, targetLang: string): string {
+    // '\x00' separator prevents ("abc","de") colliding with ("abcd","e").
+    // targetLang in key so EN→KO doesn't get EN→VI cached entry.
+    const normalized = srcText.trim().replace(/\s+/g, ' ');
+    return createHash('sha256')
+      .update(normalized + '\x00' + srcLang + '\x00' + targetLang)
+      .digest('hex');
   }
 }
