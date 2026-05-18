@@ -45,7 +45,9 @@ export class AzureTtsProvider implements TTSProvider {
     }
 
     const locale = LANG_TO_LOCALE[voice.lang] ?? voice.lang;
-    const ssml = `<speak version="1.0" xml:lang="${locale}"><voice name="${voiceName}">${escapeXml(text)}</voice></speak>`;
+    // +44% rate via SSML prosody — matches Cloud TTS speakingRate=1.44 so user
+    // hears consistent pace whichever provider in the chain wins this call.
+    const ssml = `<speak version="1.0" xml:lang="${locale}"><voice name="${voiceName}"><prosody rate="+44%">${escapeXml(text)}</prosody></voice></speak>`;
 
     const url = `https://${this.region}.tts.speech.microsoft.com/cognitiveservices/v1`;
     const response = await fetch(url, {
@@ -59,7 +61,9 @@ export class AzureTtsProvider implements TTSProvider {
     });
 
     if (!response.ok) {
-      throw new Error(`Azure TTS HTTP ${response.status}: ${response.statusText || 'auth/unauthorized'}`);
+      throw new Error(
+        `Azure TTS HTTP ${response.status}: ${response.statusText || 'auth/unauthorized'}`,
+      );
     }
 
     const arrayBuffer = await response.arrayBuffer();

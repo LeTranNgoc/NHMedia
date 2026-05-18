@@ -78,7 +78,10 @@ export class GoogleCloudTtsProvider implements TTSProvider {
       },
       audioConfig: {
         audioEncoding: 'MP3',
-        speakingRate: 1.0,
+        // 1.44 = +20% on top of the prior +20% bump — user reports dub still
+        // trails fast-talking sources. Vietnamese cadence holds up to ~1.5;
+        // beyond that quality degrades. Configurable per-call later if needed.
+        speakingRate: 1.44,
       },
     });
 
