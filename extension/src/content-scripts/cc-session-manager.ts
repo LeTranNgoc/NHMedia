@@ -78,6 +78,13 @@ export async function startCcSession(opts: CcSessionOpts): Promise<boolean> {
       };
       chrome.runtime.sendMessage(chunkMsg).catch(() => {});
     },
+    onInactive: (reason) => {
+      // CC track attached but no cues firing — YouTube programmatic mode
+      // didn't engage. Tear down the CC session + tell SW so it reverts
+      // to ASR (resumes audio capture).
+      stopCcSession();
+      chrome.runtime.sendMessage({ type: 'content.caption-inactive', reason }).catch(() => {});
+    },
   });
 
   // Notify SW that CC path is active — it will broadcast ccSource in pipeline.status.

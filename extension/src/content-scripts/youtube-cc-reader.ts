@@ -102,7 +102,16 @@ export interface CueListenerOpts {
   /** Source-side language code of the caption track to listen on (e.g. 'en'). */
   srcLang: string;
   onChunk: (text: string, startTimeMs: number) => void;
+  /** Fired when no cuechange event arrives within INACTIVE_TIMEOUT_MS after
+   *  attach. YouTube programmatic mode='hidden' sometimes doesn't fire cues
+   *  (depends on player state). Caller falls back to ASR path. */
+  onInactive?: (reason: string) => void;
 }
+
+/** No-cue grace period before declaring captions inactive. Long enough for
+ *  natural silence at video start; short enough that fallback kicks in before
+ *  user perceives the dub as broken. */
+const INACTIVE_TIMEOUT_MS = 5_000;
 
 /**
  * Start a native cuechange listener on the page's video element.
@@ -125,7 +134,9 @@ export function startCueListener(video: HTMLVideoElement, opts: CueListenerOpts)
   let track: TextTrack | null = null;
   let originalMode: TextTrackMode | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let inactiveTimer: ReturnType<typeof setTimeout> | null = null;
   let removed = false;
+  let cueReceived = false;
 
   const handler = (): void => {
     if (!track) return;
@@ -133,6 +144,7 @@ export function startCueListener(video: HTMLVideoElement, opts: CueListenerOpts)
     if (!cues) return;
     for (let i = 0; i < cues.length; i++) {
       const cue = cues[i] as VTTCue;
+      cueReceived = true;
       opts.onChunk(cue.text, cue.startTime * 1000);
     }
   };
@@ -164,6 +176,18 @@ export function startCueListener(video: HTMLVideoElement, opts: CueListenerOpts)
       console.info(
         `[cc-reader] attached cuechange — lang=${found.language || '(unknown)'} mode=${found.mode}`,
       );
+      // Inactive watchdog: if YouTube doesn't fire cuechange within the grace
+      // window (programmatic mode='hidden' sometimes isn't enough on YT's
+      // custom player), surface so caller can revert to ASR.
+      inactiveTimer = setTimeout(() => {
+        inactiveTimer = null;
+        if (!cueReceived && !removed) {
+          console.warn(
+            `[cc-reader] no cuechange in ${INACTIVE_TIMEOUT_MS}ms — caption path inactive, falling back`,
+          );
+          opts.onInactive?.('no-cuechange');
+        }
+      }, INACTIVE_TIMEOUT_MS);
       return;
     }
 
@@ -184,6 +208,10 @@ export function startCueListener(video: HTMLVideoElement, opts: CueListenerOpts)
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;
+    }
+    if (inactiveTimer !== null) {
+      clearTimeout(inactiveTimer);
+      inactiveTimer = null;
     }
     if (track) {
       track.removeEventListener('cuechange', handler);

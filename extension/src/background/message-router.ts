@@ -347,6 +347,31 @@ export class MessageRouter {
         return true;
       }
 
+      case 'content.caption-inactive': {
+        // CC track was attached but no cuechange fired in time. YouTube's
+        // programmatic hidden mode didn't engage — fall back to ASR by
+        // restarting capture (which also re-enables AudioCapture that was
+        // paused when 'caption.active' arrived).
+        const tabId = sender.tab?.id ?? this.activeTabId;
+        if (tabId == null) {
+          console.info(`[message-router] caption-inactive ignored — no active tab (${msg.reason})`);
+          return false;
+        }
+        console.info(
+          `[message-router] CC inactive (${msg.reason}) — reverting to ASR on tab ${tabId}`,
+        );
+        this.ccSource = undefined;
+        void (async () => {
+          try {
+            await this.tabCapture.stopCapture();
+          } catch (e) {
+            console.warn('[message-router] caption-inactive stopCapture failed:', e);
+          }
+          this.handle({ type: 'popup.start', tabId }, sender, () => {});
+        })();
+        return false;
+      }
+
       default: {
         const _exhaustive: never = msg;
         console.warn(

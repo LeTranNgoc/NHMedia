@@ -178,12 +178,20 @@ export interface ContentSpaNavigatedMsg {
   type: 'content.spa-navigated';
 }
 
+/** CC track was attached but no cuechange events fired (YouTube programmatic
+ *  hidden mode didn't engage). SW reverts to ASR by restarting capture. */
+export interface ContentCaptionInactiveMsg {
+  type: 'content.caption-inactive';
+  reason: string;
+}
+
 export type ContentToSwMsg =
   | ContentVideoEventMsg
   | ContentStartSessionMsg
   | ContentCaptionChunkMsg
   | ContentCaptionActiveMsg
-  | ContentSpaNavigatedMsg;
+  | ContentSpaNavigatedMsg
+  | ContentCaptionInactiveMsg;
 
 // ── SW → Content Script ───────────────────────────────────────────────────────
 
