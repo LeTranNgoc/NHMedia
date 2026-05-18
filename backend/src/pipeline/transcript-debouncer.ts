@@ -13,6 +13,27 @@ function readDebounceMs(): number {
   return Number(process.env['INTERIM_DEBOUNCE_MS'] ?? 400);
 }
 
+/** Lowercase + strip all punctuation and whitespace. Used to compare interim
+ *  text (no smart_format) vs final text (with commas + periods) so the delta
+ *  detection survives Deepgram's late punctuation insertion. */
+function normalizeForDelta(s: string): string {
+  return s.toLowerCase().replace(/[\p{P}\s]+/gu, '');
+}
+
+/** Walk `original` consuming chars until `prefixLen` normalized chars have
+ *  been seen, then return the remainder. Used to extract the suffix of an
+ *  extended utterance after a normalized-prefix match. */
+function sliceAfterNormalizedPrefix(original: string, prefixLen: number): string {
+  let seen = 0;
+  let i = 0;
+  const skipPattern = /[\p{P}\s]/u;
+  while (i < original.length && seen < prefixLen) {
+    if (!skipPattern.test(original[i]!)) seen++;
+    i++;
+  }
+  return original.slice(i);
+}
+
 /**
  * TranscriptDebouncer — collapses rapid interim ASR results into stable chunks.
  *
@@ -95,22 +116,33 @@ export class TranscriptDebouncer {
   private _emit(text: string): void {
     if (!text) return;
 
-    // Delta-emit: when Deepgram extends a previous final ("Hello world." then
-    // "Hello world. This is a test."), only the new suffix needs to be
-    // translated + spoken. Sending the full extended text re-triggers TTS on
-    // the original portion → user hears "Hello world." TWICE.
-    let toEmit = text;
-    if (this.lastEmittedText && text.startsWith(this.lastEmittedText)) {
-      const suffix = text.slice(this.lastEmittedText.length).trim();
-      if (!suffix) {
-        // Identical text — skip emit, keep lastEmittedText.
+    // Delta-emit: when Deepgram extends a previous emission ("Hello world"
+    // then "Hello, world, how are you?"), translate + speak only the new
+    // content. Compare NORMALIZED (lowercase, strip punctuation + whitespace)
+    // — Deepgram smart_format adds commas/periods on finals that interims
+    // don't have, so raw startsWith would fail and the whole final gets
+    // re-emitted as a duplicate utterance.
+    const normNew = normalizeForDelta(text);
+    const normLast = normalizeForDelta(this.lastEmittedText);
+    if (normLast && normNew.startsWith(normLast)) {
+      if (normNew === normLast) {
         console.info(`[debouncer] drop duplicate: "${text.slice(0, 40)}"`);
         return;
       }
-      toEmit = suffix;
-      console.info(`[debouncer] emit delta: "${suffix.slice(0, 40)}" (was extension of prior)`);
+      // Slice the original text at a position roughly matching the prefix
+      // length. Approximate — punctuation drift makes exact alignment hard.
+      // Walk the original until normalized-char-count matches lastEmitted's,
+      // then strip leading punctuation/whitespace from the resulting suffix.
+      const rawSuffix = sliceAfterNormalizedPrefix(text, normLast.length);
+      const suffix = rawSuffix.replace(/^[\p{P}\s]+/u, '').trim();
+      if (suffix) {
+        console.info(`[debouncer] emit delta: "${suffix.slice(0, 40)}" (was extension of prior)`);
+        this.lastEmittedText = text;
+        this.cb(suffix);
+        return;
+      }
     }
     this.lastEmittedText = text;
-    this.cb(toEmit);
+    this.cb(text);
   }
 }

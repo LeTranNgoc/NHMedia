@@ -123,6 +123,33 @@ describe('TranscriptDebouncer', () => {
     expect(cb).toHaveBeenCalledOnce();
   });
 
+  it('punctuation drift: interim "Hello world how are" → final "Hello, world, how are you?" → delta only', async () => {
+    // Regression: with INTERIM_DEBOUNCE_MS>0, Deepgram emits punctuation-free
+    // interims, then a smart_format final adds commas. Raw startsWith would
+    // mismatch and re-emit the whole final → user hears the same sentence twice.
+    const cb = vi.fn();
+    const debouncer = new TranscriptDebouncer(cb);
+
+    debouncer.push({ text: 'Hello world how are', isFinal: true, ts: 0 });
+    expect(cb).toHaveBeenLastCalledWith('Hello world how are');
+
+    debouncer.push({ text: 'Hello, world, how are you?', isFinal: true, ts: 500 });
+    expect(cb).toHaveBeenLastCalledWith('you?');
+    expect(cb).toHaveBeenCalledTimes(2);
+  });
+
+  it('punctuation-only extension: "Hello world" → "Hello, world." → drop duplicate', async () => {
+    const cb = vi.fn();
+    const debouncer = new TranscriptDebouncer(cb);
+
+    debouncer.push({ text: 'Hello world', isFinal: true, ts: 0 });
+    expect(cb).toHaveBeenCalledOnce();
+
+    // Same words, just punctuation/casing — normalize equal → skip.
+    debouncer.push({ text: 'Hello, world.', isFinal: true, ts: 500 });
+    expect(cb).toHaveBeenCalledOnce();
+  });
+
   it('final cancels a pending interim — only one emit, the final wins', async () => {
     const cb = vi.fn();
     const debouncer = new TranscriptDebouncer(cb);
