@@ -135,6 +135,7 @@ export class DeepgramNova2Provider implements ASRProvider {
       const raw = msg as {
         type?: string;
         is_final?: boolean;
+        speech_final?: boolean;
         start?: number;
         channel?: { alternatives?: { transcript?: string }[] };
       };
@@ -147,9 +148,16 @@ export class DeepgramNova2Provider implements ASRProvider {
         return;
       }
       const transcript = raw.channel?.alternatives?.[0]?.transcript ?? '';
+      // Use speech_final (true utterance boundary) instead of is_final
+      // (intermediate "stable segment" — fires multiple times per utterance).
+      // Treating each is_final=true as a final caused the dub to speak each
+      // mid-utterance segment separately → 2-4 fragments per source sentence.
+      // speech_final fires exactly once per utterance, after the endpointing
+      // window of silence — matches the voice-over coherence we need.
+      const isUtteranceEnd = raw.speech_final === true;
       this.transcriptCb?.({
         text: transcript,
-        isFinal: raw.is_final ?? false,
+        isFinal: isUtteranceEnd,
         ts: Math.round((raw.start ?? 0) * 1000),
       });
     });
