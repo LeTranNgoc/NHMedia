@@ -316,7 +316,10 @@ export async function registerRelayServer(
 
       if (frame.type === 'config') {
         const { srcLang, targetLang = 'vi' } = frame;
-        app.log.info({ userId, sessionId, srcLang, targetLang }, 'config frame received');
+        app.log.info(
+          { userId, sessionId, srcLang, targetLang, droppedBeforeConfig: audioDroppedBeforeConfig },
+          'config frame received',
+        );
         if (!(ALLOWED_SRC_LANGS as readonly string[]).includes(srcLang)) {
           app.log.warn(
             { userId, sessionId, srcLang, allowed: ALLOWED_SRC_LANGS.join(',') },
