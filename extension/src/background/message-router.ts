@@ -351,30 +351,6 @@ export class MessageRouter {
         return true;
       }
 
-      case 'offscreen.capture-dead': {
-        // Tab-capture MediaStream died silently (Chrome bug, throttling, YT
-        // audio reset). Same recovery as SPA-nav: release old streamId, request
-        // a fresh one. Without this, dub freezes until user toggles off+on.
-        const tabId = this.activeTabId;
-        if (tabId == null || this.currentStatus !== 'capturing') {
-          sendResponse({ ok: false, error: 'not_capturing' });
-          return false;
-        }
-        console.info(
-          `[message-router] capture-dead (${msg.reason}) — restarting capture on tab`,
-          tabId,
-        );
-        void (async () => {
-          try {
-            await this.tabCapture.stopCapture();
-          } catch (e) {
-            console.warn('[message-router] capture-dead stopCapture failed:', e);
-          }
-          return this.handle({ type: 'popup.start', tabId }, sender, sendResponse);
-        })();
-        return true;
-      }
-
       default: {
         const _exhaustive: never = msg;
         console.warn(
