@@ -183,14 +183,6 @@ export class MessageRouter {
         return false;
       }
 
-      case 'pipeline.frame': {
-        // Relay raw frames to the active YouTube tab (legacy path).
-        if (this.activeTabId !== null) {
-          void chrome.tabs.sendMessage(this.activeTabId, msg).catch(() => {});
-        }
-        return false;
-      }
-
       case 'pipeline.transcript': {
         // Forward detected language to status; relay text to content script.
         if (msg.lang) {

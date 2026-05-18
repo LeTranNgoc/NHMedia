@@ -82,11 +82,6 @@ export interface OffscreenPingMsg {
   type: 'offscreen.ping';
 }
 
-export interface OffscreenPipelineFrameMsg {
-  type: 'pipeline.frame';
-  frame: { type: string; [key: string]: unknown };
-}
-
 export interface OffscreenPipelineErrorMsg {
   type: 'pipeline.error';
   reason: string;
@@ -138,7 +133,6 @@ export interface OffscreenCaptureDeadMsg {
 
 export type OffscreenToSwMsg =
   | OffscreenPingMsg
-  | OffscreenPipelineFrameMsg
   | OffscreenPipelineErrorMsg
   | PipelineTranscriptMsg
   | PipelineTranslationMsg

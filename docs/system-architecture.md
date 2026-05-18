@@ -59,7 +59,7 @@ The extension is split across **three isolated JavaScript contexts** that cannot
 
 1. **Offscreen reason MUST be `USER_MEDIA`** (not `AUDIO_PLAYBACK`). USER_MEDIA does NOT have a 30s timeout. Defined in `extension/src/background/offscreen-manager.ts`.
 
-2. **Service Worker keepalive.** Offscreen sends `{type:'offscreen.ping'}` every 5s via `chrome.runtime.sendMessage` back to SW. The act of *receiving* a message resets the SW's 30s idle timer. Verified pattern for Chrome 109+.
+2. **Service Worker keepalive.** Offscreen sends `{type:'offscreen.ping'}` every 5s via `chrome.runtime.sendMessage` back to SW. The act of _receiving_ a message resets the SW's 30s idle timer. Verified pattern for Chrome 109+.
 
 3. **`chrome.tabCapture.getMediaStreamId` requires a user gesture in the initiating context.** Popup click → SW → offscreen is the supported flow. Content-script-initiated is fragile (status badge click currently invokes this path via content → SW → tabCapture — flagged as risky in review).
 
@@ -132,11 +132,11 @@ Content Script: SubtitleOverlay.show(text)
 
 The JWT lives in 3 places at once and MUST flow correctly between them:
 
-| Where | Who writes | Who reads |
-|---|---|---|
+| Where                                     | Who writes                                      | Who reads                                                                   |
+| ----------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------- |
 | `chrome.storage.local` (key: `authToken`) | post-login flow (TBD — currently no sign-in UX) | popup AccountView (via `billingApiClient.getMe()`), SW WS handshake handler |
-| `Authorization: Bearer <jwt>` header | popup `billingApiClient` fetch | backend `AuthGuard` middleware |
-| `?token=<jwt>` query string on WS URL | SW `PipelineConfig` builder | backend `auth-handshake.ts` |
+| `Authorization: Bearer <jwt>` header      | popup `billingApiClient` fetch                  | backend `AuthGuard` middleware                                              |
+| `?token=<jwt>` query string on WS URL     | SW `PipelineConfig` builder                     | backend `auth-handshake.ts`                                                 |
 
 **Common failure mode (caught in MVP review):** SW hard-codes `jwt: ''` in `PipelineConfig`. Extension cannot authenticate. Backend rejects with 4001. Symptoms: popup shows error after a few seconds, WS reconnect loops fatally.
 
@@ -183,6 +183,7 @@ backend/src/
 ## Shared types contract
 
 `shared/src/`:
+
 - `ws-protocol.ts` — `ControlFrame` discriminated union (config/pause/resume/flush/transcript/translation/audio/error), `WS_CLOSE_CODES` constants, `ALLOWED_SRC_LANGS`
 - `pipeline-types.ts` — `TranscriptEvent`, `TranslationEvent`, `AudioEvent`
 - `billing-types.ts` — `Tier`, `SubscriptionStatus`, `UsageSummary`, `BillingMeResponse`, `CheckoutResponse`
@@ -201,6 +202,7 @@ Both backend (Node.js) and extension (browser) import via `@translate-voice/shar
 - `FRONTEND_URL`, `PORT`
 
 Extension build-time env (via wxt env interpolation — currently hardcoded, FIX REQUIRED):
+
 - `VITE_BACKEND_WS_URL` → defaults to `wss://api.translate-voice.example/ws/translate` in prod
 - `VITE_BACKEND_API_URL` → defaults to `https://api.translate-voice.example` in prod
 
@@ -213,6 +215,90 @@ See `plans/reports/review-260513-0845-mvp-production-readiness.md` for the full 
 3. **Subscription tier lookup not sorted** — paying users may be wrongly downgraded after upgrade/cancel/resub.
 4. **CORS literal `chrome-extension://*` doesn't match anything** — preflight always blocked.
 5. ~~**Sign-in UX missing**~~ — **RESOLVED** (2026-05-13): Google OAuth via `chrome.identity.launchWebAuthFlow` + magic-link copy-paste flow implemented. JWT stored at `chrome.storage.local.authToken` after sign-in. See `auth-client.ts` and updated `account-view.tsx`.
+
+## Reliability + perf primitives (2026-05-18/19 hardening pass)
+
+The pipeline above has six survivability layers added during the closed-beta
+shakedown. New engineer should know each exists before debugging a "dub stops"
+or "dub repeats" report.
+
+### ASR layer (backend)
+
+- **Utterance boundary = `speech_final`, NOT `is_final`.** Deepgram fires
+  `is_final=true` multiple times per utterance (each "stable segment"). Only
+  `speech_final=true` marks the true end-of-speech. Source the
+  `TranscriptEvent.isFinal` field from `speech_final`. See
+  `backend/src/providers/asr/deepgram-nova2-provider.ts:150`.
+- **`endpointing=300`** is the silence window before `speech_final` fires.
+  Shorter (50-100ms) splits sentences at natural pauses → fragments. Don't
+  drop below 300ms for voice-over use case.
+- **`INTERIM_DEBOUNCE_MS=0`** (finals-only). Interim partial transcripts
+  translate standalone and produce incoherent fragment dubs. Never bump
+  this for "lower latency" — pick a different lever (see TTS cache, captions).
+
+### Translate layer (backend)
+
+- **Provider chain with cascade fallback** —
+  `Groq-Llama-8b → Groq-Gemma2-9b → Groq-Llama-70b → Gemini`. Each Groq model
+  has its own daily quota (~21K combined free). Single provider 429 → next
+  link translates → no user-visible silence.
+- **TranslationCache** (per session, LRU 1000) — same source text within
+  session skips translate API.
+- **TtsCache** (per session, LRU 200 × 256KB) — same translated text within
+  session skips Cloud TTS synth. Repeated phrases ("subscribe to my channel")
+  return in <1ms.
+
+### TTS playback layer (extension)
+
+- **Server audio wins over browser TTS** — when backend emits an `audio`
+  frame, ws-receiver latches `serverAudioActive=true` and silences
+  WebSpeechTtsQueue for the rest of the session. Otherwise browser TTS
+  speaks the translation 500ms before the audio frame arrives → "lặp từ".
+- **AudioContext suspend recovery** — Chrome silently suspends offscreen
+  `AudioContext` after idle. `audio-playback-queue.ts:enqueue` checks
+  `ctx.state === 'suspended'` and calls `resume()` defensively.
+- **Browser TTS watchdog** — `web-speech-tts-queue.ts` per-utterance
+  `setTimeout(15s)` force-decrements `pendingCount` if Chrome silently drops
+  the utterance (no `onend` / `onerror` fires). Without this, the queue
+  jams permanently at MAX_QUEUE_DEPTH.
+- **Skip-on-full (not cancel)** — never call `speechSynthesis.cancel()` and
+  then `speak()` in the same tick. Trips Chrome bug crbug.com/700031,
+  subsequent utterances silently no-op until page reload.
+
+### Capture layer (extension)
+
+- **SPA navigation restart** — content script listens for
+  `yt-navigate-finish`. When fired, SW stops + restarts capture so the
+  fresh streamId works on the new video.
+- **Backend `asr_dead` → capture restart** — when Deepgram exhausts
+  reconnects with no audio, backend sends `{code:'asr_dead'}` and closes
+  WS. Extension's `ws-receiver` catches this and dispatches
+  `offscreen.capture-dead` → SW handler restarts capture with fresh
+  streamId. Gate is `activeTabId` only, NOT `currentStatus` (status moves
+  past 'capturing' on first frame).
+- **CC track auto-enable** — `youtube-cc-reader.ts:startCueListener` flips
+  `track.mode = 'disabled' → 'hidden'` so cuechange fires without the user
+  manually clicking YouTube's CC button. Original mode restored on cleanup.
+
+### Pipeline layer (backend)
+
+- **Pre-config audio buffer (50 frames)** — defensive against client
+  wiring bugs where audio arrives before the config frame. Buffered audio
+  is replayed into Deepgram after the session starts.
+- **Backpressure stale-reset** — `BackpressureMonitor.shouldDrop()` resets
+  the in-flight counter if no ACK has arrived in 30s. Otherwise a long
+  silence accumulates frames in the counter and starts dropping legit
+  audio when speech resumes.
+
+### Session memory
+
+- `project-tts-dub-failure-modes.md` — six-layer checklist for "dub stops
+  intermittently" symptom (capture death, ctx suspend, queue jam, ...).
+  Run top-to-bottom before patching anything.
+- `feedback-no-interim-mode-for-voice-over.md` — locks in the
+  `INTERIM_DEBOUNCE_MS=0` rule and the `speech_final` vs `is_final`
+  distinction so future sessions don't reattempt the same bad latency
+  optimization.
 
 ## Where to learn more
 
