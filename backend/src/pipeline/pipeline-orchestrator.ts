@@ -5,6 +5,7 @@ import type { TTSProvider, SupportedLang } from '../providers/tts/tts-provider-i
 import { TranscriptDebouncer } from './transcript-debouncer.js';
 import { SentenceChunker } from './sentence-chunker.js';
 import { TranslationCache } from './translation-cache.js';
+import { TtsCache } from './tts-cache.js';
 import { AudioFrameEmitter } from './audio-frame-emitter.js';
 
 const TTS_QUEUE_BACKPRESSURE_LIMIT = 3;
@@ -37,6 +38,7 @@ export class PipelineOrchestrator {
   private readonly debouncer: TranscriptDebouncer;
   private readonly chunker: SentenceChunker;
   private readonly cache: TranslationCache;
+  private readonly ttsCache: TtsCache;
   private readonly translateProvider: TranslateProvider;
   private readonly ttsProvider: TTSProvider;
   private readonly srcLang: string;
@@ -65,6 +67,7 @@ export class PipelineOrchestrator {
     this.onTtsComplete = opts.onTtsComplete;
     this.chunker = new SentenceChunker();
     this.cache = new TranslationCache();
+    this.ttsCache = new TtsCache();
 
     this.debouncer = new TranscriptDebouncer((text) => {
       void this._handleStableTranscript(text);
@@ -97,6 +100,7 @@ export class PipelineOrchestrator {
     this.destroyed = true;
     this.debouncer.flush();
     this.cache.clear();
+    this.ttsCache.clear();
     if (this.statsTimer) {
       clearInterval(this.statsTimer);
       this.statsTimer = null;
@@ -179,11 +183,24 @@ export class PipelineOrchestrator {
     this.ttsQueueDepth++;
     const t1 = Date.now();
     try {
+      const lang = this.targetLang as SupportedLang;
+      const gender = 'female';
+      const cachedTts = this.ttsCache.get(translatedText, lang, gender);
+      if (cachedTts) {
+        console.info(
+          `[pipeline] tts: cache hit (${cachedTts.audio.length} bytes ${cachedTts.format})`,
+        );
+        this.emitter.emitAudio(cachedTts.audio, cachedTts.format);
+        // Don't double-bill on cache hits — caller already paid for the
+        // synthesis the first time around.
+        return;
+      }
       const { audio, format } = await this.ttsProvider.synthesize(translatedText, {
-        lang: this.targetLang as SupportedLang,
-        gender: 'female',
+        lang,
+        gender,
       });
       console.info(`[pipeline] tts: ${Date.now() - t1}ms → ${audio.length} bytes ${format}`);
+      this.ttsCache.set(translatedText, lang, gender, { audio, format });
       this.emitter.emitAudio(audio, format);
       this.onTtsComplete?.(translatedText.length);
     } catch (err) {

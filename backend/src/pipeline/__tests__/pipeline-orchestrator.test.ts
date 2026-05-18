@@ -196,8 +196,10 @@ describe('PipelineOrchestrator', () => {
 
     // translate should NOT have been called a 3rd time — cache hit for 'Hello world'
     expect(translate.translate).toHaveBeenCalledTimes(2);
-    // TTS called for each unique pipeline run
-    expect(tts.synthesize).toHaveBeenCalledTimes(3);
+    // TTS cache also dedups: mock returns constant "Xin chào" for every input,
+    // so even though translate runs twice, the TTS layer caches the synthesized
+    // audio after the first call. The other two iterations hit the TTS cache.
+    expect(tts.synthesize).toHaveBeenCalledTimes(1);
   });
 
   it('empty transcript → no translate, no TTS, no frames', async () => {
@@ -314,8 +316,11 @@ describe('PipelineOrchestrator', () => {
     // Allow all async pipeline stages to complete
     for (let i = 0; i < 10; i++) await Promise.resolve();
 
-    // Multiple chunks → multiple translate + TTS calls
+    // Multiple chunks → translate called per chunk (no translate cache hit
+    // because mock returns "Bản dịch" but cache key includes srcText, which
+    // differs per chunk). TTS however dedups on translated text — same
+    // "Bản dịch" output → single synthesize after the first chunk.
     expect(translate.translate).toHaveBeenCalledTimes(5);
-    expect(tts.synthesize).toHaveBeenCalledTimes(5);
+    expect(tts.synthesize).toHaveBeenCalledTimes(1);
   });
 });
