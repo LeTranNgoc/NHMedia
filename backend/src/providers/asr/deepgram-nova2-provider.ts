@@ -86,10 +86,12 @@ export class DeepgramNova2Provider implements ASRProvider {
     // for REST endpoints, not WebSocket). Without it the WS handshake never
     // gets an upgrade response and the socket hangs CONNECTING forever.
     // interim_results / smart_format types in SDK are string 'true'/'false'.
-    // Endpointing 100ms (default ~300ms): how long Deepgram waits for silence
-    // before firing `is_final=true`. Lower = faster finals = lower dub latency,
-    // at the cost of occasionally cutting mid-pause. 100ms is a sweet spot for
-    // YouTube voice-over where natural cadence has frequent short pauses.
+    // Endpointing 300ms: how long Deepgram waits for silence before firing
+    // `is_final=true`. We tried 50-100ms for lower latency but Deepgram split
+    // sentences at any natural pause ("Hello," — pause — "world") → translate
+    // saw fragments → user heard disjointed dub. 300ms aligns with Deepgram's
+    // own recommended sentence-boundary heuristic — finals match natural
+    // sentence breaks. The +250ms latency vs 50ms is worth the coherence.
     const socket = await this.client.listen.v1.connect({
       model: 'nova-2',
       encoding: 'linear16',
@@ -97,7 +99,7 @@ export class DeepgramNova2Provider implements ASRProvider {
       language: opts.srcLang,
       interim_results: 'true',
       smart_format: 'true',
-      endpointing: '50',
+      endpointing: '300',
       Authorization: `Token ${this.apiKey}`,
     } as Parameters<typeof this.client.listen.v1.connect>[0]);
 
