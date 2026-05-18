@@ -10,9 +10,9 @@ export const settingsSchema = z.object({
   subtitle: z.boolean().default(true),
   useAutoCC: z.boolean().default(true),
   /** Speech rate multiplier for the browser TTS dub (0.5..2.0).
-   *  1.3 catches up to typical YouTube speaker cadence without sounding rushed.
-   *  Bump to 1.5+ for very talky content; drop to 1.0 for slow narration. */
-  speechRate: z.number().min(0.5).max(2.0).default(1.3),
+   *  1.56 matches the server Cloud TTS rate (1.44) plus the natural slowness
+   *  of browser synth — user-tunable when the dub sounds too fast / slow. */
+  speechRate: z.number().min(0.5).max(2.0).default(1.56),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;

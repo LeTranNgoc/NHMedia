@@ -94,31 +94,56 @@ describe('WebSpeechTtsQueue', () => {
     expect(mockSynth.speak).toHaveBeenCalledTimes(1);
   });
 
-  it('keepalive pause+resume fires every 10s when idle', () => {
-    new WebSpeechTtsQueue();
-    expect(mockSynth.pause).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(10_000);
-    expect(mockSynth.pause).toHaveBeenCalledTimes(1);
-    expect(mockSynth.resume).toHaveBeenCalledTimes(1);
-
-    vi.advanceTimersByTime(10_000);
-    expect(mockSynth.pause).toHaveBeenCalledTimes(2);
-  });
-
-  it('keepalive is suppressed while actively speaking', () => {
-    new WebSpeechTtsQueue();
-    mockSynth.speaking = true;
-
-    vi.advanceTimersByTime(10_000);
-    expect(mockSynth.pause).not.toHaveBeenCalled();
-  });
-
-  it('destroy clears the keepalive timer', () => {
+  it('watchdog decrements pendingCount when onend never fires (Chrome silent-drop)', () => {
     const q = new WebSpeechTtsQueue();
-    q.destroy();
-    vi.advanceTimersByTime(30_000);
-    expect(mockSynth.pause).not.toHaveBeenCalled();
+    q.speak('one');
+    q.speak('two');
+    q.speak('three'); // queue full → skipped
+
+    // Chrome silently drops the utterances — onend/onerror never invoked.
+    // Without watchdog, queue is jammed forever. After UTTERANCE_TIMEOUT_MS the
+    // watchdog must decrement so new arrivals can queue.
+    vi.advanceTimersByTime(15_000);
+    q.speak('four');
+    expect(mockSynth.speak).toHaveBeenCalledTimes(3);
+    expect(utterances.map((u) => u.text)).toEqual(['one', 'two', 'four']);
+  });
+
+  it('watchdog is cancelled by onend (no double-decrement)', () => {
+    const q = new WebSpeechTtsQueue();
+    q.speak('one');
+    q.speak('two');
+
+    // First utterance ends normally — pendingCount: 2 → 1.
+    utterances[0].onend?.();
+    q.speak('three'); // queue has slot → accepted
+    expect(mockSynth.speak).toHaveBeenCalledTimes(3);
+
+    // Watchdog for utterance 'one' fires after 15s. It should be cancelled
+    // already → not decrement again. After advancing time, queue still
+    // accepts only one new utterance (pendingCount went 2→3 from 'three').
+    vi.advanceTimersByTime(15_000);
+    // 'two' watchdog AND 'three' watchdog fire here → 2 decrements.
+    // pendingCount: 3 → 1 (from those two), 'one' watchdog was cleared.
+    q.speak('four');
+    expect(mockSynth.speak).toHaveBeenCalledTimes(4);
+  });
+
+  it('cancel resets queue state — subsequent speak accepted immediately', () => {
+    const q = new WebSpeechTtsQueue();
+    q.speak('one');
+    q.speak('two');
+    expect(mockSynth.speak).toHaveBeenCalledTimes(2);
+
+    q.cancel();
+    expect(mockSynth.cancel).toHaveBeenCalled();
+
+    // After cancel, pendingCount must be 0 → next speak accepted without
+    // waiting on watchdog. If timers leaked, third speak would still be
+    // blocked because old timer references would prevent re-queuing.
+    q.speak('three');
+    q.speak('four');
+    expect(mockSynth.speak).toHaveBeenCalledTimes(4);
   });
 
   it('setMuted(true) cancels in-flight speech', () => {

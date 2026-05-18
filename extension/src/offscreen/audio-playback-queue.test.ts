@@ -18,15 +18,26 @@ const mockDestination = {};
 
 const mockDecodeAudioData = vi.fn<(buf: ArrayBuffer) => Promise<AudioBuffer>>();
 
+let mockCtxState: AudioContextState = 'running';
+const mockResume = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
 const mockAudioContext = {
-  get currentTime() { return mockCurrentTime; },
+  get currentTime() {
+    return mockCurrentTime;
+  },
+  get state() {
+    return mockCtxState;
+  },
   destination: mockDestination,
   decodeAudioData: (buf: ArrayBuffer) => mockDecodeAudioData(buf),
+  resume: () => mockResume(),
   createBufferSource: vi.fn(() => {
     const src: MockSource = {
       buffer: null,
       connect: vi.fn(),
-      start: vi.fn((when: number) => { src.startTime = when; }),
+      start: vi.fn((when: number) => {
+        src.startTime = when;
+      }),
       onended: null,
       startTime: 0,
     };
@@ -36,7 +47,10 @@ const mockAudioContext = {
   close: vi.fn(),
 };
 
-vi.stubGlobal('AudioContext', vi.fn(() => mockAudioContext));
+vi.stubGlobal(
+  'AudioContext',
+  vi.fn(() => mockAudioContext),
+);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -68,6 +82,8 @@ describe('AudioPlaybackQueue', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mockCurrentTime = 0;
+    mockCtxState = 'running';
+    mockResume.mockClear();
     createdSources.length = 0;
     mockDecodeAudioData.mockReset();
     mockAudioContext.createBufferSource.mockClear();
@@ -141,7 +157,7 @@ describe('AudioPlaybackQueue', () => {
     const secondStart = createdSources[1].startTime;
     // Should start at currentTime ~0.6 (stall reset), not at old scheduled end ~0.3
     expect(secondStart).toBeGreaterThanOrEqual(mockCurrentTime); // >= 0.6
-    expect(secondStart).toBeGreaterThan(firstStart + 0.3);       // > 0.3 (the old scheduled time)
+    expect(secondStart).toBeGreaterThan(firstStart + 0.3); // > 0.3 (the old scheduled time)
   });
 
   it('skips corrupt frame and continues with next', async () => {
@@ -177,5 +193,25 @@ describe('AudioPlaybackQueue', () => {
     await queue.enqueue(fakeBase64());
 
     expect(createdSources[0].connect).toHaveBeenCalledWith(mockDestination);
+  });
+
+  it('resumes a suspended AudioContext before enqueueing — avoids silent intermittent dub', async () => {
+    // Chrome can silently suspend offscreen AudioContext after idle. Without
+    // defensive resume, source.start() schedules but no audio reaches output.
+    mockCtxState = 'suspended';
+    mockDecodeAudioData.mockResolvedValue(makeAudioBuffer(0.5));
+
+    await queue.enqueue(fakeBase64());
+
+    expect(mockResume).toHaveBeenCalledOnce();
+  });
+
+  it('does not call resume when ctx is already running', async () => {
+    mockCtxState = 'running';
+    mockDecodeAudioData.mockResolvedValue(makeAudioBuffer(0.5));
+
+    await queue.enqueue(fakeBase64());
+
+    expect(mockResume).not.toHaveBeenCalled();
   });
 });

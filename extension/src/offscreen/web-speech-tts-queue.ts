@@ -22,7 +22,7 @@ export class WebSpeechTtsQueue {
   private gain = 1.0;
 
   /** Speech rate (SpeechSynthesisUtterance.rate). User-tunable via settings. */
-  private rate = 1.3;
+  private rate = 1.56;
 
   /** Last-spoken dedup window — if the same exact text arrives again within
    *  this window, skip. Defends against pipeline duplicates (cache hits, race
@@ -34,22 +34,21 @@ export class WebSpeechTtsQueue {
   /** Hard cap on queued utterances. New arrivals are SKIPPED while queue is full
    *  (NOT cancelled — calling speechSynthesis.cancel() followed by speak() trips
    *  Chrome bug crbug.com/700031 where subsequent utterances silently no-op until
-   *  the page reloads. That's the "must toggle off+on" symptom). 2 = current
-   *  speech + 1 next pending. Stale content drops naturally — queue drains. */
+   *  the page reloads). 2 = current speech + 1 next pending. */
   private readonly MAX_QUEUE_DEPTH = 2;
 
-  /** Keepalive timer — Chrome's speechSynthesis is known to silently halt after
-   *  ~15s of inactivity in service-worker / offscreen contexts. A periodic
-   *  pause/resume tap keeps the synth alive even between utterances. */
-  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
-  private readonly KEEPALIVE_INTERVAL_MS = 10_000;
+  /** Watchdog: max realistic time for any single utterance to play. If Chrome
+   *  silently drops the utterance (onend/onerror never fire), the pendingCount
+   *  ledger never decrements and the queue jams permanently at MAX_QUEUE_DEPTH.
+   *  Each speak() schedules a timer that force-decrements after this window. */
+  private readonly UTTERANCE_TIMEOUT_MS = 15_000;
+  private pendingTimers = new Set<ReturnType<typeof setTimeout>>();
 
   constructor() {
     this.refreshVoice();
     // Voices load asynchronously on first speak() — listen for the late event.
     if (typeof speechSynthesis !== 'undefined') {
       speechSynthesis.addEventListener('voiceschanged', () => this.refreshVoice());
-      this.keepaliveTimer = setInterval(() => this._keepalive(), this.KEEPALIVE_INTERVAL_MS);
     }
   }
 
@@ -107,12 +106,28 @@ export class WebSpeechTtsQueue {
     utter.lang = this.voice?.lang ?? 'vi-VN';
     utter.rate = this.rate;
     utter.volume = this.gain;
-    utter.onend = () => {
+
+    // Watchdog: Chrome speechSynthesis sometimes silently drops utterances
+    // without firing onend/onerror. Without this, pendingCount stays at
+    // MAX_QUEUE_DEPTH forever and every subsequent arrival gets skipped.
+    let settled = false;
+    const decrement = (reason: string): void => {
+      if (settled) return;
+      settled = true;
       this.pendingCount = Math.max(0, this.pendingCount - 1);
+      this.pendingTimers.delete(timer);
+      clearTimeout(timer);
+      if (reason !== 'end') {
+        console.warn(`[web-speech-tts] decrement via ${reason}: "${trimmed.slice(0, 40)}"`);
+      }
     };
+    const timer = setTimeout(() => decrement('watchdog-timeout'), this.UTTERANCE_TIMEOUT_MS);
+    this.pendingTimers.add(timer);
+
+    utter.onend = () => decrement('end');
     utter.onerror = (e) => {
-      this.pendingCount = Math.max(0, this.pendingCount - 1);
       console.warn('[web-speech-tts] utterance error:', e.error);
+      decrement('error');
     };
 
     this.pendingCount++;
@@ -122,28 +137,17 @@ export class WebSpeechTtsQueue {
   /** Cancel all queued + speaking utterances. Use on stop / pause. */
   cancel(): void {
     if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
+    for (const t of this.pendingTimers) clearTimeout(t);
+    this.pendingTimers.clear();
     this.pendingCount = 0;
   }
 
   destroy(): void {
-    if (this.keepaliveTimer !== null) {
-      clearInterval(this.keepaliveTimer);
-      this.keepaliveTimer = null;
-    }
     this.cancel();
   }
 
   // ── Private ──────────────────────────────────────────────────────────────
 
-  /** Tap pause/resume periodically to defeat Chrome's silent-stall behavior.
-   *  Only acts when not actively speaking — a no-op for users with continuous
-   *  dub flow. Pause/resume on an idle synth is harmless on all platforms. */
-  private _keepalive(): void {
-    if (typeof speechSynthesis === 'undefined') return;
-    if (speechSynthesis.speaking || speechSynthesis.pending) return;
-    speechSynthesis.pause();
-    speechSynthesis.resume();
-  }
   private refreshVoice(): void {
     if (typeof speechSynthesis === 'undefined') return;
     const voices = speechSynthesis.getVoices();

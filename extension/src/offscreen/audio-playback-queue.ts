@@ -24,6 +24,18 @@ export class AudioPlaybackQueue {
    * Decode errors are logged and skipped — playback continues with subsequent frames.
    */
   async enqueue(base64: string): Promise<void> {
+    // Chrome can silently suspend an AudioContext in offscreen documents after
+    // idle periods or under autoplay policy. Reasserting resume() before each
+    // enqueue is cheap (no-op when already running) and prevents intermittent
+    // silence — symptom: audio frames decoded successfully but user hears
+    // nothing because the destination is suspended.
+    if (this.ctx.state === 'suspended') {
+      console.warn('[audio-playback-queue] ctx suspended — resuming');
+      this.ctx.resume().catch((e) => {
+        console.warn('[audio-playback-queue] resume failed:', e);
+      });
+    }
+
     let buffer: AudioBuffer;
     try {
       const arrayBuffer = this.base64ToArrayBuffer(base64);
@@ -61,7 +73,11 @@ export class AudioPlaybackQueue {
    */
   clear(): void {
     for (const src of this.activeSources) {
-      try { src.stop(); } catch { /* already stopped */ }
+      try {
+        src.stop();
+      } catch {
+        /* already stopped */
+      }
     }
     this.activeSources = [];
     this.nextScheduledTime = 0;
