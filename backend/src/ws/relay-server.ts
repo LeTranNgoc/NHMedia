@@ -251,6 +251,7 @@ export async function registerRelayServer(
     });
 
     let asrStarted = false;
+    let audioDroppedBeforeConfig = 0;
     // Captured from the most recent config frame so `flush` restarts ASR
     // with the user's chosen language, not a default.
     let currentSrcLang: string = 'en';
@@ -290,7 +291,15 @@ export async function registerRelayServer(
 
       if (parsed.kind === 'audio') {
         if (!asrStarted) {
-          // Buffer drop: audio before config — silently discard
+          // Audio arrived before config — count drops so we know when the
+          // session is misordered (extension forgot to send config first).
+          audioDroppedBeforeConfig++;
+          if (audioDroppedBeforeConfig === 1 || audioDroppedBeforeConfig % 50 === 0) {
+            app.log.warn(
+              { userId, sessionId, dropped: audioDroppedBeforeConfig },
+              'audio frame dropped — asrStarted=false (no config frame yet?)',
+            );
+          }
           return;
         }
         if (bp.shouldDrop()) {
@@ -307,7 +316,12 @@ export async function registerRelayServer(
 
       if (frame.type === 'config') {
         const { srcLang, targetLang = 'vi' } = frame;
+        app.log.info({ userId, sessionId, srcLang, targetLang }, 'config frame received');
         if (!(ALLOWED_SRC_LANGS as readonly string[]).includes(srcLang)) {
+          app.log.warn(
+            { userId, sessionId, srcLang, allowed: ALLOWED_SRC_LANGS.join(',') },
+            'config rejected — invalid srcLang',
+          );
           const errFrame: ServerControlFrame = {
             type: 'error',
             code: 'invalid_src_lang',
