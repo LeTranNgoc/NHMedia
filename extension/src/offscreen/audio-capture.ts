@@ -14,12 +14,18 @@ import type { RingBuffer } from './ring-buffer';
  *
  * SharedArrayBuffer usage: extension offscreen documents run in a context
  * with COOP/COEP headers set by Chrome MV3 — SAB is always available.
+ *
+ * Liveness: tab-capture streams can die silently when Chrome throttles the
+ * tab, when audio context inside YouTube resets, or after long idle periods.
+ * The `onStreamLost` callback fires when the track ends or mutes so the
+ * caller can request a fresh streamId and restart capture.
  */
 export class AudioCapture {
   private ctx: AudioContext | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private workletNode: AudioWorkletNode | null = null;
   private stream: MediaStream | null = null;
+  private onStreamLost: ((reason: string) => void) | null = null;
   /**
    * Gain node between captured source and destination. Tab-audio capture in
    * Chrome diverts the tab output into the stream, silencing the user's
@@ -29,6 +35,11 @@ export class AudioCapture {
   private playbackGain: GainNode | null = null;
 
   constructor(private readonly ringBuffer: RingBuffer) {}
+
+  /** Callback fired when the capture track ends or mutes silently. */
+  setOnStreamLost(cb: (reason: string) => void): void {
+    this.onStreamLost = cb;
+  }
 
   /** Set captured-audio gain (0 = mute, 1 = full). DuckingManager hook. */
   setPlaybackGain(value: number): void {
@@ -67,6 +78,25 @@ export class AudioCapture {
     };
 
     this.stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    // Wire liveness detection on the audio track — Chrome doesn't always fire
+    // these events for tab-capture deaths, but when it does fire, we want to
+    // surface immediately so the SW can request a fresh streamId. Guard the
+    // API access — unit-test mocks don't always implement getAudioTracks.
+    const track =
+      typeof this.stream.getAudioTracks === 'function'
+        ? this.stream.getAudioTracks()[0]
+        : undefined;
+    if (track && typeof track.addEventListener === 'function') {
+      track.addEventListener('ended', () => {
+        console.warn('[audio-capture] track ended — stream lost');
+        this.onStreamLost?.('track-ended');
+      });
+      track.addEventListener('mute', () => {
+        console.warn('[audio-capture] track muted — stream likely dead');
+        this.onStreamLost?.('track-muted');
+      });
+    }
 
     this.source = this.ctx.createMediaStreamSource(this.stream);
 

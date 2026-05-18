@@ -303,14 +303,18 @@ export async function registerRelayServer(
 
     asr.onError((err) => {
       app.log.warn({ userId, sessionId, err: err.message }, 'ASR error');
-      const frame: ServerControlFrame = {
-        type: 'error',
-        code: 'asr_auth',
-        message: err.message,
-      };
+      // Map the underlying ASR error to a specific client-visible code so the
+      // extension can decide between (a) reconnecting the WS, (b) requesting a
+      // fresh tab-capture streamId, or (c) showing an auth error to the user.
+      // Previously all ASR errors were labelled 'asr_auth' — extension treated
+      // a dead tab-capture stream as auth failure and gave up.
+      let code: 'asr_auth' | 'asr_dead' | 'asr_error' = 'asr_error';
+      if (err.message === 'asr_auth') code = 'asr_auth';
+      else if (err.message === 'asr_reconnect_exhausted') code = 'asr_dead';
+      const frame: ServerControlFrame = { type: 'error', code, message: err.message };
       if (socket.readyState === socket.OPEN) {
         socket.send(JSON.stringify(frame));
-        socket.close(1011, 'ASR error');
+        socket.close(1011, code);
       }
     });
 

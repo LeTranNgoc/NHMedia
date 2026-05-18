@@ -370,7 +370,7 @@ describe('WS ASR error propagation', () => {
     expect(closeResult.code).toBe(1011);
   });
 
-  it('sends error frame to client when ASR emits error', async () => {
+  it('sends specific error code based on ASR error message', async () => {
     const token = await jwtService.sign({ userId: 'user-asrerr', email: 'asrerr@test.com' });
     const url = `ws://127.0.0.1:${serverPort}/ws/translate?token=${token}&srcLang=en`;
     const ws = await connectWs(url);
@@ -378,12 +378,15 @@ describe('WS ASR error propagation', () => {
     ws.send(JSON.stringify({ type: 'config', srcLang: 'en', audioMode: 'voice-over' }));
     await new Promise((r) => setTimeout(r, 100));
 
+    // Generic ASR error → code 'asr_error' (not blanket 'asr_auth' anymore).
+    // Specific codes are preserved for 'asr_auth' (1008 Policy Violation) and
+    // 'asr_reconnect_exhausted' (tab capture dead) so the extension can react.
     const msgPromise = waitForMessage(ws);
     mockErrorCb!(new Error('Unauthorized'));
     const msg = (await msgPromise) as { type: string; code: string };
 
     expect(msg.type).toBe('error');
-    expect(msg.code).toBe('asr_auth');
+    expect(msg.code).toBe('asr_error');
 
     await waitForClose(ws).catch(() => {
       // ignore

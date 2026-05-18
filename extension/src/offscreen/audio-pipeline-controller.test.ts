@@ -30,6 +30,7 @@ vi.mock('./audio-capture', () => ({
   AudioCapture: vi.fn().mockImplementation(() => ({
     start: mockCaptureStart,
     stop: mockCaptureStop,
+    setOnStreamLost: vi.fn(),
     isRunning: true,
   })),
 }));
@@ -71,18 +72,21 @@ vi.mock('./ws-receiver', () => ({
 }));
 
 // AudioContext stub — needed because pipeline now creates one for TTS playback
-vi.stubGlobal('AudioContext', vi.fn().mockImplementation(() => ({
-  currentTime: 0,
-  destination: {},
-  decodeAudioData: vi.fn().mockResolvedValue({}),
-  createBufferSource: vi.fn(() => ({
-    buffer: null,
-    connect: vi.fn(),
-    start: vi.fn(),
-    onended: null,
+vi.stubGlobal(
+  'AudioContext',
+  vi.fn().mockImplementation(() => ({
+    currentTime: 0,
+    destination: {},
+    decodeAudioData: vi.fn().mockResolvedValue({}),
+    createBufferSource: vi.fn(() => ({
+      buffer: null,
+      connect: vi.fn(),
+      start: vi.fn(),
+      onended: null,
+    })),
+    close: vi.fn().mockResolvedValue(undefined),
   })),
-  close: vi.fn().mockResolvedValue(undefined),
-})));
+);
 
 // WsClient mock
 const mockWsConnect = vi.fn<() => void>();
@@ -108,7 +112,9 @@ vi.mock('./ws-client', () => ({
       sendControl: mockWsSendControl,
       sendStickyControl: mockWsSendStickyControl,
       close: mockWsClose,
-      get bufferedAmount() { return mockWsBufferedAmount; },
+      get bufferedAmount() {
+        return mockWsBufferedAmount;
+      },
     };
   }),
 }));
@@ -124,7 +130,13 @@ vi.stubGlobal('chrome', {
 
 const DEFAULT_PAYLOAD: StartPayload = {
   streamId: 'stream-abc',
-  config: { srcLang: 'en', targetLang: 'vi', wsUrl: 'ws://localhost:3000/ws', jwt: 'tok', audioMode: 'voice-over' },
+  config: {
+    srcLang: 'en',
+    targetLang: 'vi',
+    wsUrl: 'ws://localhost:3000/ws',
+    jwt: 'tok',
+    audioMode: 'voice-over',
+  },
 };
 
 function makeSpeechChunk(): Int16Array {
@@ -380,9 +392,9 @@ describe('AudioPipelineController — no pipeline.frame relay (High 1)', () => {
     capturedWsOpts.onFrame?.({ type: 'transcript', text: 'hello', lang: 'en' });
     await vi.advanceTimersByTimeAsync(300);
 
-    const pipelineFrameCalls = vi.mocked(chrome.runtime.sendMessage).mock.calls.filter(
-      (args) => (args[0] as { type?: string })?.type === 'pipeline.frame',
-    );
+    const pipelineFrameCalls = vi
+      .mocked(chrome.runtime.sendMessage)
+      .mock.calls.filter((args) => (args[0] as { type?: string })?.type === 'pipeline.frame');
     expect(pipelineFrameCalls).toHaveLength(0);
   });
 });

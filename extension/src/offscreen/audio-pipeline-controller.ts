@@ -139,6 +139,15 @@ export class AudioPipelineController {
       if (!isSubtitleMode) {
         // 5. Audio capture (getUserMedia + worklet)
         this.capture = new AudioCapture(this.ringBuffer!);
+        // Plumb stream-death → SW so a fresh streamId can be acquired without
+        // requiring the user to toggle the extension off+on. Optional-chain
+        // guards tests that mock AudioCapture without the new method.
+        this.capture.setOnStreamLost?.((reason) => {
+          console.warn(`[pipeline] capture stream lost: ${reason} — notifying SW`);
+          chrome.runtime
+            .sendMessage({ type: 'offscreen.capture-dead', reason })
+            .catch((e) => console.warn('[pipeline] capture-dead notify failed:', e));
+        });
         await this.capture.start(streamId);
 
         // 6. Start tick loop

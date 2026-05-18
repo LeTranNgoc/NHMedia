@@ -257,6 +257,30 @@ export class MessageRouter {
         return false;
       }
 
+      case 'offscreen.capture-dead': {
+        // Tab-capture MediaStream died silently — the streamId is useless now.
+        // Restart capture so chrome.tabCapture.getMediaStreamId hands out a
+        // fresh one. Without this, the user must toggle the extension off+on
+        // to get audio flowing again.
+        const tabId = this.activeTabId;
+        if (tabId == null || this.currentStatus !== 'capturing') {
+          console.info(`[message-router] capture-dead ignored — not capturing (${msg.reason})`);
+          return false;
+        }
+        console.info(
+          `[message-router] capture stream dead (${msg.reason}) — restarting on tab ${tabId}`,
+        );
+        void (async () => {
+          try {
+            await this.tabCapture.stopCapture();
+          } catch (e) {
+            console.warn('[message-router] capture-dead stopCapture failed:', e);
+          }
+          this.handle({ type: 'popup.start', tabId }, sender, () => {});
+        })();
+        return false;
+      }
+
       case 'content.video.event': {
         // Forward video events to offscreen for timeline/pipeline control.
         const videoMsg: SwVideoEventMsg = {
@@ -321,6 +345,30 @@ export class MessageRouter {
             await this.tabCapture.stopCapture();
           } catch (e) {
             console.warn('[message-router] SPA-nav stopCapture failed:', e);
+          }
+          return this.handle({ type: 'popup.start', tabId }, sender, sendResponse);
+        })();
+        return true;
+      }
+
+      case 'offscreen.capture-dead': {
+        // Tab-capture MediaStream died silently (Chrome bug, throttling, YT
+        // audio reset). Same recovery as SPA-nav: release old streamId, request
+        // a fresh one. Without this, dub freezes until user toggles off+on.
+        const tabId = this.activeTabId;
+        if (tabId == null || this.currentStatus !== 'capturing') {
+          sendResponse({ ok: false, error: 'not_capturing' });
+          return false;
+        }
+        console.info(
+          `[message-router] capture-dead (${msg.reason}) — restarting capture on tab`,
+          tabId,
+        );
+        void (async () => {
+          try {
+            await this.tabCapture.stopCapture();
+          } catch (e) {
+            console.warn('[message-router] capture-dead stopCapture failed:', e);
           }
           return this.handle({ type: 'popup.start', tabId }, sender, sendResponse);
         })();

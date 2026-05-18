@@ -128,6 +128,14 @@ export interface OffscreenTelemetryErrorMsg {
   error: string;
 }
 
+/** Tab-capture stream died silently (Chrome bug, throttling, or YouTube audio
+ *  reset). SW should release the dead streamId and request a fresh one via
+ *  chrome.tabCapture.getMediaStreamId — same recovery as SPA navigation. */
+export interface OffscreenCaptureDeadMsg {
+  type: 'offscreen.capture-dead';
+  reason: string;
+}
+
 export type OffscreenToSwMsg =
   | OffscreenPingMsg
   | OffscreenPipelineFrameMsg
@@ -135,7 +143,8 @@ export type OffscreenToSwMsg =
   | PipelineTranscriptMsg
   | PipelineTranslationMsg
   | PipelineStatusMsg
-  | OffscreenTelemetryErrorMsg;
+  | OffscreenTelemetryErrorMsg
+  | OffscreenCaptureDeadMsg;
 
 // ── Content Script → SW ───────────────────────────────────────────────────────
 
