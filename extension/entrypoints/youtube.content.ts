@@ -88,7 +88,10 @@ export default defineContentScript({
                     ccActive = false;
                   }
                 } catch (err) {
-                  console.warn('[youtube.content] CC session start failed, falling back to ASR:', err);
+                  console.warn(
+                    '[youtube.content] CC session start failed, falling back to ASR:',
+                    err,
+                  );
                   ccActive = false;
                 }
               })();
@@ -123,6 +126,25 @@ export default defineContentScript({
         }
       },
     );
+
+    // ── SPA navigation: YouTube swaps the video element on next-video clicks
+    // without reloading the page. The tabCapture stream becomes silent because
+    // the audio routing inside YouTube is reset. Tell SW to restart capture
+    // when navigation completes — only when capture was active.
+    let lastNavigateUrl = location.href;
+    document.addEventListener('yt-navigate-finish', () => {
+      if (location.href === lastNavigateUrl) return;
+      lastNavigateUrl = location.href;
+      if (!ccActive) {
+        // ccActive doubles as "pipeline currently running" — only nudge SW if so.
+        return;
+      }
+      console.info('[youtube.content] yt-navigate-finish detected — restarting capture');
+      chrome.runtime.sendMessage({ type: 'content.spa-navigated' }).catch(() => {});
+      // Tear down old CC session — SW will trigger a fresh start.
+      ccActive = false;
+      stopCcSession();
+    });
 
     // ── Cleanup on unload ─────────────────────────────────────────────────
     window.addEventListener('beforeunload', () => {

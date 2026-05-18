@@ -123,6 +123,7 @@ export class MessageRouter {
                 wsUrl: WS_URL,
                 jwt,
                 audioMode: settings.audioMode,
+                speechRate: settings.speechRate,
               },
             });
             this.currentStatus = 'capturing';
@@ -302,6 +303,28 @@ export class MessageRouter {
         }
         // Re-use the popup.start path by synthesising the message.
         return this.handle({ type: 'popup.start', tabId }, sender, sendResponse);
+      }
+
+      case 'content.spa-navigated': {
+        // YouTube swapped video element in-place (no page reload). The existing
+        // tab MediaStream still exists but stops emitting audio → backend
+        // Deepgram timeouts in a loop. Stop + start with a fresh streamId so
+        // the dub resumes on the new video.
+        const tabId = sender.tab?.id ?? this.activeTabId;
+        if (tabId == null || this.currentStatus !== 'capturing') {
+          sendResponse({ ok: false, error: 'not_capturing' });
+          return false;
+        }
+        console.info('[message-router] SPA nav — restarting capture on tab', tabId);
+        void (async () => {
+          try {
+            await this.tabCapture.stopCapture();
+          } catch (e) {
+            console.warn('[message-router] SPA-nav stopCapture failed:', e);
+          }
+          return this.handle({ type: 'popup.start', tabId }, sender, sendResponse);
+        })();
+        return true;
       }
 
       default: {

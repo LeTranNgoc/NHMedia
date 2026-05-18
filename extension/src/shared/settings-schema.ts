@@ -9,6 +9,10 @@ export const settingsSchema = z.object({
   targetLanguage: z.enum(['vi', 'en', 'ko', 'ja', 'fr', 'de', 'hi', 'zh-Hans']).default('vi'),
   subtitle: z.boolean().default(true),
   useAutoCC: z.boolean().default(true),
+  /** Speech rate multiplier for the browser TTS dub (0.5..2.0).
+   *  1.3 catches up to typical YouTube speaker cadence without sounding rushed.
+   *  Bump to 1.5+ for very talky content; drop to 1.0 for slow narration. */
+  speechRate: z.number().min(0.5).max(2.0).default(1.3),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;

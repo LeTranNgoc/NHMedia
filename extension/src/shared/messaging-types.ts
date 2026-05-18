@@ -168,11 +168,19 @@ export interface ContentCaptionActiveMsg {
   kind: 'asr' | 'standard';
 }
 
+/** YouTube SPA navigation finished — tab MediaStream still alive but audio
+ *  routing reset internally, so backend Deepgram socket times out. SW restarts
+ *  capture with a fresh streamId to resume the dub on the new video. */
+export interface ContentSpaNavigatedMsg {
+  type: 'content.spa-navigated';
+}
+
 export type ContentToSwMsg =
   | ContentVideoEventMsg
   | ContentStartSessionMsg
   | ContentCaptionChunkMsg
-  | ContentCaptionActiveMsg;
+  | ContentCaptionActiveMsg
+  | ContentSpaNavigatedMsg;
 
 // ── SW → Content Script ───────────────────────────────────────────────────────
 
@@ -192,10 +200,7 @@ export interface SwSettingsBroadcastMsg {
   settings: Settings;
 }
 
-export type SwToContentMsg =
-  | SwSubtitleMsg
-  | SwStatusBadgeMsg
-  | SwSettingsBroadcastMsg;
+export type SwToContentMsg = SwSubtitleMsg | SwStatusBadgeMsg | SwSettingsBroadcastMsg;
 
 // ── Status response ───────────────────────────────────────────────────────────
 

@@ -68,8 +68,15 @@ export class WsClient {
   /** Send raw PCM Int16 bytes as a binary WS frame. */
   sendAudio(buffer: Int16Array): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
+    if (!this._firstAudioLogged) {
+      this._firstAudioLogged = true;
+      console.info(
+        `[ws] first audio frame send — stickyCount=${this.stickyControlFrames.length} (config must be in this array or already flushed)`,
+      );
+    }
     this.ws.send(buffer.buffer);
   }
+  private _firstAudioLogged = false;
 
   /** Send a JSON control frame. Queues frames sent before WS is OPEN. */
   sendControl(frame: WsFrame): void {
@@ -91,8 +98,13 @@ export class WsClient {
    */
   sendStickyControl(frame: WsFrame): void {
     this.stickyControlFrames.push(frame);
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(frame));
+    const state = this.ws?.readyState;
+    console.info(
+      `[ws] sendStickyControl type=${frame.type} — readyState=${state} (0=CONNECTING 1=OPEN), stickyCount=${this.stickyControlFrames.length}`,
+    );
+    if (state === WebSocket.OPEN) {
+      this.ws!.send(JSON.stringify(frame));
+      console.info(`[ws] sendStickyControl type=${frame.type} — sent immediately (OPEN)`);
     }
     // Not OPEN yet → rely on 'open' handler flushing stickyControlFrames.
   }
@@ -191,11 +203,12 @@ export class WsClient {
         (ev.code >= 4000 && ev.code <= 4999); // all 4xxx treated as fatal
 
       if (isFatal) {
-        const reason = ev.code === 4001
-          ? 'auth_failed'
-          : ev.code === 4003
-            ? 'quota_exceeded'
-            : `fatal_close_${ev.code}`;
+        const reason =
+          ev.code === 4001
+            ? 'auth_failed'
+            : ev.code === 4003
+              ? 'quota_exceeded'
+              : `fatal_close_${ev.code}`;
         this.opts.onFatalError(reason);
         return;
       }
@@ -218,16 +231,18 @@ export class WsClient {
     const jitter = AUDIO_CONFIG.WS_RECONNECT_JITTER_MS;
 
     // Exp backoff: base × 2^attempt, capped at max, ±jitter
-    const delay = Math.min(base * Math.pow(2, attempt), max)
-      + (Math.random() * 2 - 1) * jitter;
+    const delay = Math.min(base * Math.pow(2, attempt), max) + (Math.random() * 2 - 1) * jitter;
 
     this.reconnectAttempt += 1;
 
-    this.reconnectTimer = setTimeout(() => {
-      if (!this.stopped) {
-        this.openSocket();
-      }
-    }, Math.max(0, delay));
+    this.reconnectTimer = setTimeout(
+      () => {
+        if (!this.stopped) {
+          this.openSocket();
+        }
+      },
+      Math.max(0, delay),
+    );
   }
 
   private clearReconnectTimer(): void {

@@ -16,6 +16,8 @@ export interface PipelineConfig {
   audioMode: 'voice-over' | 'replacement';
   /** 'subtitle' skips AudioCapture + RingBuffer + VAD; only WS + playback are started. */
   sourceMode?: 'audio' | 'subtitle';
+  /** Browser TTS playback rate (0.5..2.0). Defaults to 1.3 in WebSpeechTtsQueue. */
+  speechRate?: number;
 }
 
 export interface StartPayload {
@@ -101,10 +103,13 @@ export class AudioPipelineController {
       // Falls back transparently to AudioPlaybackQueue (server audio frames)
       // when the OS lacks a Vietnamese voice — see WsReceiver.handleFrame.
       this.webSpeech = new WebSpeechTtsQueue();
+      if (config.speechRate !== undefined) {
+        this.webSpeech.setRate(config.speechRate);
+      }
       console.info(
         `[pipeline] web-speech tts: ${
           this.webSpeech.isSupported()
-            ? `enabled (voice="${this.webSpeech.voiceName()}")`
+            ? `enabled (voice="${this.webSpeech.voiceName()}", rate=${config.speechRate ?? '1.3 default'})`
             : 'unsupported — using server TTS audio frames'
         }`,
       );

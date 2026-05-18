@@ -16,11 +16,7 @@
  *   - Does NOT modify cc-reader.
  */
 
-import {
-  extractTracksFromPlayerResponse,
-  pickTrack,
-  startCueListener,
-} from './youtube-cc-reader';
+import { extractTracksFromPlayerResponse, pickTrack, startCueListener } from './youtube-cc-reader';
 import type { ContentCaptionChunkMsg, ContentCaptionActiveMsg } from '../shared/messaging-types';
 
 export interface CcSessionOpts {
@@ -47,7 +43,7 @@ export async function startCcSession(opts: CcSessionOpts): Promise<boolean> {
   // Ensure any prior session is torn down.
   stopCcSession();
 
-  const { html, video, srcLang, targetLang, useAutoCC } = opts;
+  const { html, video, srcLang, useAutoCC } = opts;
 
   const tracks = extractTracksFromPlayerResponse(html);
   const track = pickTrack(tracks, { srcLang, useAutoCC });
@@ -63,15 +59,17 @@ export async function startCcSession(opts: CcSessionOpts): Promise<boolean> {
   // attack surface on the SW relay.
 
   // Locate the video element — may not be available yet, startCueListener handles polling.
-  const videoEl = video ?? (document.querySelector<HTMLVideoElement>('video') ?? undefined);
+  const videoEl = video ?? document.querySelector<HTMLVideoElement>('video') ?? undefined;
   if (!videoEl) {
     // No video element; CC path not viable.
     return false;
   }
 
   // Start cue listener — fires onChunk for each active cue.
+  // Match on srcLang ('en') because that's the language of the textTrack we
+  // want to read. targetLang ('vi') is unrelated — that's the dub output.
   _cleanupCueListen = startCueListener(videoEl, {
-    targetLang,
+    srcLang: track.languageCode || srcLang,
     onChunk: (text, ts) => {
       const chunkMsg: ContentCaptionChunkMsg = {
         type: 'caption.chunk',

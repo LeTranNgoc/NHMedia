@@ -35,11 +35,9 @@ export function extractTracksFromPlayerResponse(html: string): CcTrack[] {
     return [];
   }
 
-  const tracks: unknown[] | undefined =
-    (data as { captions?: { playerCaptionsTracklistRenderer?: { captionTracks?: unknown[] } } })
-      ?.captions
-      ?.playerCaptionsTracklistRenderer
-      ?.captionTracks;
+  const tracks: unknown[] | undefined = (
+    data as { captions?: { playerCaptionsTracklistRenderer?: { captionTracks?: unknown[] } } }
+  )?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
   if (!Array.isArray(tracks)) return [];
 
@@ -101,19 +99,26 @@ export function pickTrack(tracks: CcTrack[], opts: PickTrackOpts): CcTrack | nul
 }
 
 export interface CueListenerOpts {
-  targetLang: string;
+  /** Source-side language code of the caption track to listen on (e.g. 'en'). */
+  srcLang: string;
   onChunk: (text: string, startTimeMs: number) => void;
 }
 
 /**
  * Start a native cuechange listener on the page's video element.
  * Polls for textTracks to populate (up to 5s / 10 tries × 500ms).
+ *
+ * Track-pick priority:
+ *   1. Track with `language === srcLang` (e.g. 'en' captions for an English video)
+ *   2. The track YouTube is currently displaying (mode === 'showing')
+ *   3. First textTrack in the list (last-resort fallback)
+ *
+ * Does NOT mutate `track.mode` — YouTube controls visibility. Setting it to
+ * 'hidden' would conflict with the user's CC toggle on the YouTube player.
+ *
  * Returns a cleanup function to remove the listener.
  */
-export function startCueListener(
-  video: HTMLVideoElement,
-  opts: CueListenerOpts,
-): () => void {
+export function startCueListener(video: HTMLVideoElement, opts: CueListenerOpts): () => void {
   let track: TextTrack | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let removed = false;
@@ -134,20 +139,29 @@ export function startCueListener(
   const tryAttach = (): void => {
     if (removed) return;
 
+    const tracks = Array.from(video.textTracks);
     const found =
-      Array.from(video.textTracks).find((t) => t.language === opts.targetLang) ??
-      (video.textTracks.length > 0 ? video.textTracks[0] : null);
+      tracks.find((t) => t.language === opts.srcLang) ??
+      tracks.find((t) => t.mode === 'showing') ??
+      tracks[0] ??
+      null;
 
     if (found) {
       track = found;
-      track.mode = 'hidden';
       track.addEventListener('cuechange', handler);
+      console.info(
+        `[cc-reader] attached cuechange — lang=${found.language || '(unknown)'} mode=${found.mode}`,
+      );
       return;
     }
 
     attempts++;
     if (attempts < MAX_ATTEMPTS) {
       timer = setTimeout(tryAttach, 500);
+    } else {
+      console.warn(
+        '[cc-reader] no textTracks found after 5s — CC path inactive, falling back to ASR',
+      );
     }
   };
 
