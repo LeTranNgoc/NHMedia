@@ -78,12 +78,18 @@ export class DeepgramNova2Provider implements ASRProvider {
   // ── Private ──────────────────────────────────────────────────────────────────
 
   private async _connect(opts: ASRStartOptions): Promise<void> {
-    console.info(`[deepgram] connecting (srcLang=${opts.srcLang}, sampleRate=${opts.sampleRate}, apiKey=${this.apiKey ? `${this.apiKey.slice(0, 4)}…${this.apiKey.length}ch` : 'EMPTY'})`);
+    console.info(
+      `[deepgram] connecting (srcLang=${opts.srcLang}, sampleRate=${opts.sampleRate}, apiKey=${this.apiKey ? `${this.apiKey.slice(0, 4)}…${this.apiKey.length}ch` : 'EMPTY'})`,
+    );
     // SDK v5: Authorization MUST be in connect args — constructor's apiKey
     // does NOT auto-inject into WS upgrade headers (only sets up authProvider
     // for REST endpoints, not WebSocket). Without it the WS handshake never
     // gets an upgrade response and the socket hangs CONNECTING forever.
     // interim_results / smart_format types in SDK are string 'true'/'false'.
+    // Endpointing 100ms (default ~300ms): how long Deepgram waits for silence
+    // before firing `is_final=true`. Lower = faster finals = lower dub latency,
+    // at the cost of occasionally cutting mid-pause. 100ms is a sweet spot for
+    // YouTube voice-over where natural cadence has frequent short pauses.
     const socket = await this.client.listen.v1.connect({
       model: 'nova-2',
       encoding: 'linear16',
@@ -91,6 +97,7 @@ export class DeepgramNova2Provider implements ASRProvider {
       language: opts.srcLang,
       interim_results: 'true',
       smart_format: 'true',
+      endpointing: '100',
       Authorization: `Token ${this.apiKey}`,
     } as Parameters<typeof this.client.listen.v1.connect>[0]);
 
@@ -107,16 +114,28 @@ export class DeepgramNova2Provider implements ASRProvider {
     // Wait for the underlying WS to actually open (poll readyState w/ 5s timeout
     // + close-before-open detection — SDK's own waitForOpen has a race).
     await this._waitForSocketOpen(socket);
+    // Reset retry budget on every healthy open. Without this, long sessions
+    // burn through BACKOFF_MS once and then any 4th transient close (very
+    // common over hours) leaves the socket permanently dead — audio frames
+    // sink into sendMedia() while Dịch counter flatlines.
+    this.retryCount = 0;
     console.info('[deepgram] socket OPEN — ready for audio');
 
     let messageCount = 0;
     socket.on('message', (msg) => {
       messageCount++;
       if (messageCount <= 3 || messageCount % 50 === 0) {
-        console.info(`[deepgram] message #${messageCount}: type=${(msg as { type?: string }).type ?? 'unknown'} raw=${JSON.stringify(msg).slice(0, 200)}`);
+        console.info(
+          `[deepgram] message #${messageCount}: type=${(msg as { type?: string }).type ?? 'unknown'} raw=${JSON.stringify(msg).slice(0, 200)}`,
+        );
       }
       // msg is V1Socket.Response — discriminate on type
-      const raw = msg as { type?: string; is_final?: boolean; start?: number; channel?: { alternatives?: { transcript?: string }[] } };
+      const raw = msg as {
+        type?: string;
+        is_final?: boolean;
+        start?: number;
+        channel?: { alternatives?: { transcript?: string }[] };
+      };
       // ANY Deepgram message (Results, Metadata, SpeechStarted, UtteranceEnd…)
       // proves the socket is alive and processing. Fire transcriptCb so the
       // relay can ACK backpressure on it. Non-Results messages are forwarded
@@ -154,10 +173,23 @@ export class DeepgramNova2Provider implements ASRProvider {
         const delay = BACKOFF_MS[this.retryCount++];
         setTimeout(() => {
           if (!this.stopped && this.startOpts !== null) {
-            void this._connect(this.startOpts);
+            this._connect(this.startOpts).catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.warn(`[deepgram] reconnect attempt failed: ${msg}`);
+              this.errorCb?.(err instanceof Error ? err : new Error(msg));
+            });
           }
         }, delay);
+        return;
       }
+
+      // Retries exhausted — surface to relay so it can close the WS and let
+      // the client reconnect with a fresh session (which gets retryCount=0).
+      // Silent here = audio frames black-hole forever.
+      console.warn(
+        `[deepgram] reconnect exhausted after ${this.retryCount} attempts — signalling client`,
+      );
+      this.errorCb?.(new Error('asr_reconnect_exhausted'));
     });
   }
 

@@ -11,6 +11,7 @@ import { DeepgramNova2Provider } from '../providers/asr/deepgram-nova2-provider.
 import { GeminiFlashProvider } from '../providers/translate/gemini-flash-provider.js';
 import { AzureTranslateProvider } from '../providers/translate/azure-translate-provider.js';
 import { GroqTranslateProvider } from '../providers/translate/groq-translate-provider.js';
+import { TranslateProviderChain } from '../providers/translate/translate-provider-chain.js';
 import { GoogleCloudTtsProvider } from '../providers/tts/google-cloud-tts-provider.js';
 import { AzureTtsProvider } from '../providers/tts/azure-tts-provider.js';
 import { TtsProviderChain } from '../providers/tts/tts-provider-chain.js';
@@ -46,19 +47,86 @@ export interface RelayServerOptions {
   backendTtsDisabled?: boolean;
 }
 
-/** Choose translate provider based on env config. Falls back to Gemini when the
- *  selected provider's key is absent — keeps dev/test working even when env is
- *  incomplete. Order of preference: explicit choice → fallback Gemini. */
+/** Choose translate provider chain based on env config. The primary provider
+ *  is the explicit choice (TRANSLATE_PROVIDER). Any other provider with a key
+ *  becomes a fallback link — so a Groq 429 cascades to Gemini, not to user
+ *  silence. Single-provider chain returned when only one key is set.
+ *
+ *  Ordering inside the chain: primary first, then by latency/cost preference
+ *  (Groq fastest, Azure highest quota, Gemini last because of 15 RPM cap). */
 export function pickTranslateProvider(
   env: Pick<Env, 'TRANSLATE_PROVIDER' | 'AZURE_TRANSLATOR_KEY' | 'GEMINI_API_KEY' | 'GROQ_API_KEY'>,
 ): TranslateProvider {
-  if (env.TRANSLATE_PROVIDER === 'azure' && env.AZURE_TRANSLATOR_KEY) {
-    return new AzureTranslateProvider({ apiKey: env.AZURE_TRANSLATOR_KEY });
+  const choice = env.TRANSLATE_PROVIDER;
+  const available: Array<{
+    name: string;
+    key: 'groq' | 'azure' | 'gemini';
+    provider: TranslateProvider;
+  }> = [];
+
+  if (env.GROQ_API_KEY) {
+    // Each Groq model has its OWN daily quota. Stacking them multiplies free
+    // capacity: 8b (6K/day) + gemma2 (14K/day) + 70b (1K/day) = ~21K/day vs
+    // 6K with a single model. Order = fastest/cheapest first so quality cost
+    // is paid only when faster tiers are exhausted.
+    available.push({
+      name: 'Groq-Llama-8b',
+      key: 'groq',
+      provider: new GroqTranslateProvider({
+        apiKey: env.GROQ_API_KEY,
+        model: 'llama-3.1-8b-instant',
+      }),
+    });
+    available.push({
+      name: 'Groq-Gemma2-9b',
+      key: 'groq',
+      provider: new GroqTranslateProvider({
+        apiKey: env.GROQ_API_KEY,
+        model: 'gemma2-9b-it',
+      }),
+    });
+    available.push({
+      name: 'Groq-Llama-70b',
+      key: 'groq',
+      provider: new GroqTranslateProvider({
+        apiKey: env.GROQ_API_KEY,
+        model: 'llama-3.3-70b-versatile',
+      }),
+    });
   }
-  if (env.TRANSLATE_PROVIDER === 'groq' && env.GROQ_API_KEY) {
-    return new GroqTranslateProvider({ apiKey: env.GROQ_API_KEY });
+  if (env.AZURE_TRANSLATOR_KEY) {
+    available.push({
+      name: 'Azure',
+      key: 'azure',
+      provider: new AzureTranslateProvider({ apiKey: env.AZURE_TRANSLATOR_KEY }),
+    });
   }
-  return new GeminiFlashProvider({ apiKey: env.GEMINI_API_KEY ?? '' });
+  if (env.GEMINI_API_KEY) {
+    available.push({
+      name: 'Gemini',
+      key: 'gemini',
+      provider: new GeminiFlashProvider({ apiKey: env.GEMINI_API_KEY }),
+    });
+  }
+
+  if (available.length === 0) {
+    console.warn('[translate] no provider keys set — Gemini fallback with empty key (will fail)');
+    return new GeminiFlashProvider({ apiKey: '' });
+  }
+
+  // Hoist the user-chosen provider to the front when its key is present.
+  available.sort((a, b) => {
+    if (a.key === choice) return -1;
+    if (b.key === choice) return 1;
+    return 0;
+  });
+
+  console.info(`[translate] chain = ${available.map((p) => p.name).join(' → ')}`);
+
+  if (available.length === 1) {
+    return available[0]!.provider;
+  }
+  return new TranslateProviderChain(available.map(({ name, provider }) => ({ name, provider })));
 }
 
 export async function registerRelayServer(
@@ -90,6 +158,16 @@ export async function registerRelayServer(
 
     const { userId } = claims;
     const sessionId = randomUUID();
+
+    // Parse srcLang from URL query — extension provides this as a hint so the
+    // backend can auto-start ASR if the client never sends a config frame
+    // (extension wiring race / older builds). Falls back to 'en' if missing.
+    const rawUrl = request.raw.url ?? '';
+    const queryMatch = rawUrl.match(/[?&]srcLang=([a-zA-Z-]+)/);
+    const urlSrcLang =
+      queryMatch && (ALLOWED_SRC_LANGS as readonly string[]).includes(queryMatch[1])
+        ? queryMatch[1]
+        : 'en';
 
     // ── Usage gate — check quota, buffer messages during async check ──────────
     // Message handler is registered immediately to avoid losing frames that arrive
@@ -260,14 +338,82 @@ export async function registerRelayServer(
     });
 
     let asrStarted = false;
+    let asrStarting = false;
+    let autoStartTriggered = false;
     let audioDroppedBeforeConfig = 0;
+    // Resilience: buffer the latest N audio frames received before config.
+    // When config arrives, drain them into ASR so the first second of speech
+    // doesn't get lost to a race between client open + config send + audio start.
+    // FIFO, bounded — older frames evicted when full.
+    const PRE_CONFIG_BUFFER_MAX = 50; // ~5s at 100ms/frame
+    const preConfigAudioBuffer: Buffer[] = [];
     // Captured from the most recent config frame so `flush` restarts ASR
     // with the user's chosen language, not a default.
-    let currentSrcLang: string = 'en';
+    let currentSrcLang: string = urlSrcLang;
+
+    /** Start ASR + create orchestrator. Idempotent — guards against double-start
+     *  when both audio (auto-start) and config arrive in quick succession. */
+    const startAsrAndOrchestrator = async (
+      srcLang: string,
+      targetLang: string,
+      _audioMode: string,
+    ): Promise<void> => {
+      if (asrStarted || asrStarting) return;
+      asrStarting = true;
+      currentSrcLang = srcLang;
+
+      orchestrator?.destroy();
+      orchestrator = new PipelineOrchestrator({
+        socket,
+        translateProvider,
+        ttsProvider,
+        srcLang,
+        targetLang,
+        ttsDisabled: backendTtsDisabled === true,
+        onTranslateComplete: usageTracker
+          ? (chars) => usageTracker.tick(userId, chars, 'translateChars')
+          : undefined,
+        onTtsComplete: usageTracker
+          ? (chars) => usageTracker.tick(userId, chars, 'ttsChars')
+          : undefined,
+      });
+
+      try {
+        await asr.start({ srcLang, sampleRate: 16000 });
+        asrStarted = true;
+        asrStarting = false;
+        app.log.info({ userId, sessionId, srcLang }, 'ASR session started');
+        if (preConfigAudioBuffer.length > 0) {
+          app.log.info(
+            { userId, sessionId, replaying: preConfigAudioBuffer.length },
+            'replaying pre-config audio buffer to ASR',
+          );
+          for (const pcm of preConfigAudioBuffer) {
+            bp.frameSent();
+            asr.sendAudio(pcm);
+          }
+          preConfigAudioBuffer.length = 0;
+        }
+      } catch (err) {
+        asrStarting = false;
+        const msg = err instanceof Error ? err.message : String(err);
+        app.log.error({ userId, sessionId, err: msg }, 'ASR start failed');
+        if (socket.readyState === socket.OPEN) {
+          const errFrame: ServerControlFrame = {
+            type: 'error',
+            code: 'asr_start_failed',
+            message: msg,
+          };
+          socket.send(JSON.stringify(errFrame));
+          socket.close(1011, 'asr_start_failed');
+        }
+      }
+    };
     // C3 defense: when a caption frame arrives within the last 5s, the CC
     // path is considered active and ASR transcripts are suppressed to
     // prevent the orchestrator from translating the same segment twice.
     let lastCaptionFrameAt = 0;
+    let audioSuppressedByCaption = 0;
     const CAPTION_ACTIVE_WINDOW_MS = 5000;
 
     // ── 6. Message handler ──────────────────────────────────────────────────
@@ -300,13 +446,37 @@ export async function registerRelayServer(
 
       if (parsed.kind === 'audio') {
         if (!asrStarted) {
-          // Audio arrived before config — count drops so we know when the
-          // session is misordered (extension forgot to send config first).
-          audioDroppedBeforeConfig++;
-          if (audioDroppedBeforeConfig === 1 || audioDroppedBeforeConfig % 50 === 0) {
+          // Buffer the chunk + trigger auto-start once. Backend cannot rely on
+          // client always sending config first — historical bugs in extension
+          // wiring + edge browser builds put audio first. Auto-start with the
+          // URL-query srcLang (default 'en') unblocks the pipeline immediately;
+          // a later config frame can still adjust translation target.
+          preConfigAudioBuffer.push(parsed.pcm);
+          if (preConfigAudioBuffer.length > PRE_CONFIG_BUFFER_MAX) {
+            preConfigAudioBuffer.shift();
+            audioDroppedBeforeConfig++;
+          }
+          if (!autoStartTriggered) {
+            autoStartTriggered = true;
             app.log.warn(
-              { userId, sessionId, dropped: audioDroppedBeforeConfig },
-              'audio frame dropped — asrStarted=false (no config frame yet?)',
+              { userId, sessionId, urlSrcLang },
+              'audio arrived before config — auto-starting ASR with URL srcLang fallback',
+            );
+            void startAsrAndOrchestrator(urlSrcLang, 'vi', 'voice-over');
+          }
+          return;
+        }
+        // Cost saver: when captions-first path is active (caption frames flowing
+        // in the last 5s), skip forwarding audio to Deepgram. CC is the source
+        // of truth — paying for ASR while suppressing its output is pure waste.
+        // Drops at message-handler level keep the Deepgram WS open (cheap) and
+        // resume automatically when caption flow stops.
+        if (Date.now() - lastCaptionFrameAt < CAPTION_ACTIVE_WINDOW_MS) {
+          audioSuppressedByCaption++;
+          if (audioSuppressedByCaption === 1 || audioSuppressedByCaption % 500 === 0) {
+            app.log.info(
+              { userId, sessionId, suppressed: audioSuppressedByCaption },
+              'audio frame suppressed by caption path (Deepgram cost saved)',
             );
           }
           return;
@@ -343,55 +513,21 @@ export async function registerRelayServer(
           return;
         }
 
-        currentSrcLang = srcLang;
-
-        // Defer asrStarted=true until Deepgram socket is actually OPEN.
-        // Setting it true before start() resolves caused audio frames to be
-        // forwarded to a CONNECTING socket → SDK threw "Socket is not open"
-        // → unhandled exception crashed the relay process.
-        void asr
-          .start({ srcLang, sampleRate: 16000 })
-          .then(() => {
-            asrStarted = true;
-          })
-          .catch((err: unknown) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            app.log.error({ userId, sessionId, err: msg }, 'ASR start failed');
-            // I2: notify client + close the socket so the UI exits the
-            // "capturing" state instead of stalling forever.
-            if (socket.readyState === socket.OPEN) {
-              const errFrame: ServerControlFrame = {
-                type: 'error',
-                code: 'asr_start_failed',
-                message: msg,
-              };
-              socket.send(JSON.stringify(errFrame));
-              socket.close(1011, 'asr_start_failed');
-            }
-          });
-
-        // Instantiate per-session pipeline orchestrator
-        orchestrator?.destroy();
-        orchestrator = new PipelineOrchestrator({
-          socket,
-          translateProvider,
-          ttsProvider,
-          srcLang,
-          targetLang,
-          ttsDisabled: backendTtsDisabled === true,
-          onTranslateComplete: usageTracker
-            ? (chars) => {
-                usageTracker.tick(userId, chars, 'translateChars');
-              }
-            : undefined,
-          onTtsComplete: usageTracker
-            ? (chars) => {
-                usageTracker.tick(userId, chars, 'ttsChars');
-              }
-            : undefined,
-        });
-
-        app.log.info({ userId, sessionId, srcLang }, 'ASR session started');
+        // If auto-start already ran with URL srcLang and config now disagrees,
+        // tear down + restart ASR with the user's intended lang. Otherwise just
+        // ensure ASR is up (idempotent).
+        void (async () => {
+          if (asrStarted && srcLang !== currentSrcLang) {
+            app.log.info(
+              { userId, sessionId, oldLang: currentSrcLang, newLang: srcLang },
+              'config srcLang differs from auto-start — restarting ASR',
+            );
+            await asr.stop();
+            asrStarted = false;
+            asrStarting = false;
+          }
+          await startAsrAndOrchestrator(srcLang, targetLang, frame.audioMode ?? 'voice-over');
+        })();
         return;
       }
 
