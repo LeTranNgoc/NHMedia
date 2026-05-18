@@ -8,6 +8,7 @@ import { TranslationCache } from './translation-cache.js';
 import { AudioFrameEmitter } from './audio-frame-emitter.js';
 
 const TTS_QUEUE_BACKPRESSURE_LIMIT = 3;
+const STATS_INTERVAL_MS = 30_000;
 
 export interface PipelineOrchestratorOptions {
   socket: WebSocket;
@@ -48,6 +49,11 @@ export class PipelineOrchestrator {
   private readonly onTranslateComplete?: (chars: number) => void;
   private readonly onTtsComplete?: (chars: number) => void;
 
+  /** Rolling counters reset each STATS_INTERVAL_MS — lets us see the actual
+   *  fail-vs-success ratio at the source of truth, not from anecdote. */
+  private stats = { chunks: 0, ok: 0, fail: 0, cacheHit: 0, empty: 0 };
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(opts: PipelineOrchestratorOptions) {
     this.emitter = new AudioFrameEmitter(opts.socket);
     this.translateProvider = opts.translateProvider;
@@ -63,6 +69,21 @@ export class PipelineOrchestrator {
     this.debouncer = new TranscriptDebouncer((text) => {
       void this._handleStableTranscript(text);
     });
+
+    // Skip in vitest fake-timer envs — the interval would loop forever under
+    // vi.advanceTimersByTime. Tests don't observe pipeline stats anyway.
+    if (process.env['NODE_ENV'] !== 'test') {
+      this.statsTimer = setInterval(() => this._logStats(), STATS_INTERVAL_MS);
+    }
+  }
+
+  private _logStats(): void {
+    const s = this.stats;
+    if (s.chunks === 0 && s.fail === 0 && s.cacheHit === 0 && s.empty === 0) return;
+    console.info(
+      `[pipeline] stats/${STATS_INTERVAL_MS / 1000}s: chunks=${s.chunks} ok=${s.ok} fail=${s.fail} cache=${s.cacheHit} empty=${s.empty}`,
+    );
+    this.stats = { chunks: 0, ok: 0, fail: 0, cacheHit: 0, empty: 0 };
   }
 
   /** Feed an ASR transcript event into the pipeline. */
@@ -76,6 +97,10 @@ export class PipelineOrchestrator {
     this.destroyed = true;
     this.debouncer.flush();
     this.cache.clear();
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
   }
 
   // ── Private ──────────────────────────────────────────────────────────────────
@@ -93,6 +118,7 @@ export class PipelineOrchestrator {
   }
 
   private async _processChunk(srcText: string): Promise<void> {
+    this.stats.chunks++;
     const chunkPreview = srcText.length > 40 ? srcText.slice(0, 40) + '...' : srcText;
     console.info(`[pipeline] chunk in: "${chunkPreview}" (${srcText.length} chars)`);
 
@@ -102,6 +128,7 @@ export class PipelineOrchestrator {
     const cached = this.cache.get(srcText, this.srcLang);
     if (cached !== undefined) {
       translatedText = cached;
+      this.stats.cacheHit++;
       console.info(`[pipeline] translate: cache hit`);
     } else {
       const t0 = Date.now();
@@ -116,17 +143,20 @@ export class PipelineOrchestrator {
         );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        this.stats.fail++;
         console.error(`[pipeline] translate_fail (${Date.now() - t0}ms): ${message}`);
         this.emitter.emitError('translate_fail', message);
         return;
       }
 
       if (!translatedText) {
+        this.stats.empty++;
         console.warn('[pipeline] translate returned empty string');
         this.emitter.emitError('translate_empty', 'Translation returned empty string');
         return;
       }
 
+      this.stats.ok++;
       this.cache.set(srcText, this.srcLang, translatedText);
       // Bill on INPUT chars to match Azure Translator / Cloud Translate pricing.
       this.onTranslateComplete?.(srcText.length);

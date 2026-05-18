@@ -72,8 +72,9 @@ export class SentenceChunker {
       }
     }
 
-    // Filter: at least MIN_CHUNK chars AND must contain a letter or digit (any script)
-    return result.filter((s) => s.trim().length >= MIN_CHUNK && hasLetterOrDigit(s));
+    // Filter noise: must contain a letter or digit. Short utterances ("Yes.",
+    // "OK!", "Go.") are kept — MIN_CHUNK only governs merging into neighbors.
+    return result.filter((s) => hasLetterOrDigit(s));
   }
 
   private _splitLong(text: string): string[] {

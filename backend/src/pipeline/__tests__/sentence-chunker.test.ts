@@ -68,17 +68,20 @@ describe('SentenceChunker', () => {
       expect(chunker.chunk('   ', 'en')).toEqual([]);
     });
 
-    it('only punctuation "..." → [] (too short, < MIN_CHUNK)', () => {
+    it('only punctuation "..." → [] (no letter/digit)', () => {
       expect(chunker.chunk('...', 'en')).toEqual([]);
     });
 
-    it('chunks < MIN_CHUNK chars are merged with previous', () => {
-      // "Hi. How?" — "Hi." is 3 chars (< 5), should merge with next
-      const result = chunker.chunk('Hi. How are you doing today?', 'en');
-      // Should not produce a standalone chunk shorter than MIN_CHUNK
-      for (const chunk of result) {
-        expect(chunk.length).toBeGreaterThanOrEqual(5);
-      }
+    it('short standalone utterances are kept (real-world "Yes." / "OK!" speech)', () => {
+      // Standalone short utterances are meaningful — must not be silently dropped.
+      expect(chunker.chunk('Yes.', 'en')).toEqual(['Yes.']);
+      expect(chunker.chunk('OK!', 'en')).toEqual(['OK!']);
+    });
+
+    it('trailing short chunks merge into previous', () => {
+      // "How are you doing today? Yes." — "Yes." (4 chars) merges into prior.
+      const result = chunker.chunk('How are you doing today? Yes.', 'en');
+      expect(result).toEqual(['How are you doing today? Yes.']);
     });
   });
 });

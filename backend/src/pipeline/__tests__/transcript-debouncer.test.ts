@@ -93,9 +93,34 @@ describe('TranscriptDebouncer', () => {
     expect(cb).toHaveBeenCalledTimes(2);
     expect(cb).toHaveBeenLastCalledWith('second phrase');
 
+    // Delta-emit: "second phrase final" extends "second phrase" → emit only "final"
     debouncer.push({ text: 'second phrase final', isFinal: true, ts: 1500 });
     expect(cb).toHaveBeenCalledTimes(3);
-    expect(cb).toHaveBeenLastCalledWith('second phrase final');
+    expect(cb).toHaveBeenLastCalledWith('final');
+  });
+
+  it('extension of prior emit → only the delta is emitted (avoids TTS repetition)', async () => {
+    const cb = vi.fn();
+    const debouncer = new TranscriptDebouncer(cb);
+
+    debouncer.push({ text: 'Hello world.', isFinal: true, ts: 0 });
+    expect(cb).toHaveBeenLastCalledWith('Hello world.');
+
+    // Deepgram extends with same prefix + new content → emit only the new part.
+    debouncer.push({ text: 'Hello world. This is a test.', isFinal: true, ts: 500 });
+    expect(cb).toHaveBeenLastCalledWith('This is a test.');
+    expect(cb).toHaveBeenCalledTimes(2);
+  });
+
+  it('exact duplicate text → no second emit', async () => {
+    const cb = vi.fn();
+    const debouncer = new TranscriptDebouncer(cb);
+
+    debouncer.push({ text: 'Hello world.', isFinal: true, ts: 0 });
+    expect(cb).toHaveBeenCalledOnce();
+
+    debouncer.push({ text: 'Hello world.', isFinal: true, ts: 100 });
+    expect(cb).toHaveBeenCalledOnce();
   });
 
   it('final cancels a pending interim — only one emit, the final wins', async () => {
@@ -112,6 +137,35 @@ describe('TranscriptDebouncer', () => {
 
     // Advance past the original interim's debounce — pending was cleared,
     // no second emit should fire.
+    await vi.advanceTimersByTimeAsync(500);
+    expect(cb).toHaveBeenCalledOnce();
+  });
+
+  it('new utterance whose text appears as substring of a previous final → must emit', async () => {
+    // Regression: previously used `includes` which silently dropped any text
+    // that was a substring of the last emitted — common short words like
+    // "the", "is", "and" would never re-emit after the first long final.
+    const cb = vi.fn();
+    const debouncer = new TranscriptDebouncer(cb);
+
+    debouncer.push({ text: 'Hello, world, this is a test.', isFinal: true, ts: 0 });
+    expect(cb).toHaveBeenCalledOnce();
+
+    // "world" is a substring of the prior final but is a NEW utterance — must emit.
+    debouncer.push({ text: 'world', isFinal: true, ts: 1000 });
+    expect(cb).toHaveBeenCalledTimes(2);
+    expect(cb).toHaveBeenLastCalledWith('world');
+  });
+
+  it('stale interim shorter than the just-emitted final → drop (prefix dedup)', async () => {
+    const cb = vi.fn();
+    const debouncer = new TranscriptDebouncer(cb);
+
+    debouncer.push({ text: 'good morning world', isFinal: true, ts: 0 });
+    expect(cb).toHaveBeenCalledOnce();
+
+    // A late-arriving interim that's a prefix of the final → dedupe.
+    debouncer.push({ text: 'good morning', isFinal: false, ts: 50 });
     await vi.advanceTimersByTimeAsync(500);
     expect(cb).toHaveBeenCalledOnce();
   });
