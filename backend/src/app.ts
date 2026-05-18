@@ -32,7 +32,8 @@ export interface AppEnv {
   DEEPGRAM_API_KEY?: string;
   GEMINI_API_KEY?: string;
   AZURE_TRANSLATOR_KEY?: string;
-  TRANSLATE_PROVIDER?: 'gemini' | 'azure';
+  GROQ_API_KEY?: string;
+  TRANSLATE_PROVIDER?: 'gemini' | 'azure' | 'groq';
   GOOGLE_CLOUD_TTS_KEY_FILE?: string;
   GOOGLE_CLOUD_TTS_CREDENTIALS_JSON?: string;
   AZURE_SPEECH_KEY?: string;
@@ -201,6 +202,7 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
     deepgramApiKey: env.DEEPGRAM_API_KEY ?? '',
     geminiApiKey: env.GEMINI_API_KEY ?? '',
     azureTranslatorKey: env.AZURE_TRANSLATOR_KEY ?? '',
+    groqApiKey: env.GROQ_API_KEY ?? '',
     translateProvider: env.TRANSLATE_PROVIDER,
     googleCloudTtsKeyFile: env.GOOGLE_CLOUD_TTS_KEY_FILE ?? '',
     googleCloudTtsCredentialsJson: env.GOOGLE_CLOUD_TTS_CREDENTIALS_JSON ?? '',

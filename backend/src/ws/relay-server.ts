@@ -10,6 +10,7 @@ import { emitLifecycleEvent } from './connection-lifecycle.js';
 import { DeepgramNova2Provider } from '../providers/asr/deepgram-nova2-provider.js';
 import { GeminiFlashProvider } from '../providers/translate/gemini-flash-provider.js';
 import { AzureTranslateProvider } from '../providers/translate/azure-translate-provider.js';
+import { GroqTranslateProvider } from '../providers/translate/groq-translate-provider.js';
 import { GoogleCloudTtsProvider } from '../providers/tts/google-cloud-tts-provider.js';
 import { AzureTtsProvider } from '../providers/tts/azure-tts-provider.js';
 import { TtsProviderChain } from '../providers/tts/tts-provider-chain.js';
@@ -32,7 +33,8 @@ export interface RelayServerOptions {
   deepgramApiKey: string;
   geminiApiKey?: string;
   azureTranslatorKey?: string;
-  translateProvider?: 'gemini' | 'azure';
+  groqApiKey?: string;
+  translateProvider?: 'gemini' | 'azure' | 'groq';
   googleCloudTtsKeyFile?: string;
   googleCloudTtsCredentialsJson?: string;
   azureSpeechKey?: string;
@@ -44,12 +46,17 @@ export interface RelayServerOptions {
   backendTtsDisabled?: boolean;
 }
 
-/** Choose translate provider based on env config. Falls back to Gemini when Azure key absent. */
+/** Choose translate provider based on env config. Falls back to Gemini when the
+ *  selected provider's key is absent — keeps dev/test working even when env is
+ *  incomplete. Order of preference: explicit choice → fallback Gemini. */
 export function pickTranslateProvider(
-  env: Pick<Env, 'TRANSLATE_PROVIDER' | 'AZURE_TRANSLATOR_KEY' | 'GEMINI_API_KEY'>,
+  env: Pick<Env, 'TRANSLATE_PROVIDER' | 'AZURE_TRANSLATOR_KEY' | 'GEMINI_API_KEY' | 'GROQ_API_KEY'>,
 ): TranslateProvider {
   if (env.TRANSLATE_PROVIDER === 'azure' && env.AZURE_TRANSLATOR_KEY) {
     return new AzureTranslateProvider({ apiKey: env.AZURE_TRANSLATOR_KEY });
+  }
+  if (env.TRANSLATE_PROVIDER === 'groq' && env.GROQ_API_KEY) {
+    return new GroqTranslateProvider({ apiKey: env.GROQ_API_KEY });
   }
   return new GeminiFlashProvider({ apiKey: env.GEMINI_API_KEY ?? '' });
 }
@@ -63,6 +70,7 @@ export async function registerRelayServer(
     deepgramApiKey,
     geminiApiKey,
     azureTranslatorKey,
+    groqApiKey,
     translateProvider: translateProviderChoice,
     googleCloudTtsKeyFile,
     googleCloudTtsCredentialsJson,
@@ -114,6 +122,7 @@ export async function registerRelayServer(
       TRANSLATE_PROVIDER: translateProviderChoice ?? 'azure',
       AZURE_TRANSLATOR_KEY: azureTranslatorKey ?? '',
       GEMINI_API_KEY: geminiApiKey ?? '',
+      GROQ_API_KEY: groqApiKey ?? '',
     });
     const cloudTts = new GoogleCloudTtsProvider({
       keyFilename: googleCloudTtsKeyFile || undefined,

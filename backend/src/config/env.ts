@@ -32,7 +32,9 @@ const envSchema = z.object({
   POLAR_PRO_CHECKOUT_URL: z.string().optional().default(''),
   POLAR_SERVER: z.enum(['sandbox', 'production']).optional().default('production'),
   AZURE_TRANSLATOR_KEY: z.string().optional().default(''),
-  TRANSLATE_PROVIDER: z.enum(['gemini', 'azure']).optional().default('azure'),
+  /** Groq API key — free tier 30 RPM, email-only signup (no CC). */
+  GROQ_API_KEY: z.string().optional().default(''),
+  TRANSLATE_PROVIDER: z.enum(['gemini', 'azure', 'groq']).optional().default('azure'),
   AZURE_SPEECH_KEY: z.string().optional().default(''),
   AZURE_SPEECH_REGION: z.string().optional().default('southeastasia'),
   /** Daily free-tier cap in seconds of audio captured. Prod: 900 (15m), Dev: 36000 (10h). */
