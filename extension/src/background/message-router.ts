@@ -260,15 +260,19 @@ export class MessageRouter {
       case 'offscreen.capture-dead': {
         // Tab-capture MediaStream died silently — the streamId is useless now.
         // Restart capture so chrome.tabCapture.getMediaStreamId hands out a
-        // fresh one. Without this, the user must toggle the extension off+on
-        // to get audio flowing again.
+        // fresh one. Without this, the user must toggle the extension off+on.
+        //
+        // Gate ONLY on activeTabId. currentStatus is unreliable here: by the
+        // time asr_dead arrives, status has long since moved on from
+        // 'capturing' → 'translating' / 'playing' (set by frame handlers). A
+        // status-based bailout was the bug that caused this report.
         const tabId = this.activeTabId;
-        if (tabId == null || this.currentStatus !== 'capturing') {
-          console.info(`[message-router] capture-dead ignored — not capturing (${msg.reason})`);
+        if (tabId == null) {
+          console.info(`[message-router] capture-dead ignored — no active tab (${msg.reason})`);
           return false;
         }
         console.info(
-          `[message-router] capture stream dead (${msg.reason}) — restarting on tab ${tabId}`,
+          `[message-router] capture stream dead (${msg.reason}) — restarting on tab ${tabId} (status was ${this.currentStatus})`,
         );
         void (async () => {
           try {
