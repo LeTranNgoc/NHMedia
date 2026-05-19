@@ -59,6 +59,13 @@ export class AudioPipelineController {
   // Diagnostic counters — logged every 50 ticks (~5 s)
   private stats = { ticks: 0, chunksRead: 0, speech: 0, sent: 0, backpressure: 0 };
 
+  /** Debounce timer for pause/seek/ended → clear+pause. YouTube fires spurious
+   *  pause+play pairs during buffer underruns (sub-100ms). Without debounce
+   *  each one calls `playbackQueue.clear()` → TTS cut mid-sentence (Type B
+   *  interruption). Real user pause stays paused >200ms — clear fires then. */
+  private pauseClearTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly PAUSE_DEBOUNCE_MS = 200;
+
   /** Samples per chunk = 100 ms × 16 kHz = 1600 */
   private readonly CHUNK_SAMPLES = AUDIO_CONFIG.CHUNK_BYTE_SIZE / 2; // Int16 = 2 bytes/sample
 
@@ -229,12 +236,22 @@ export class AudioPipelineController {
       case 'pause':
       case 'seeking':
       case 'ended':
-        this.playbackQueue?.clear();
-        this.ws?.sendControl({ type: 'pause' });
+        // Debounce: only clear+pause if video stays paused for PAUSE_DEBOUNCE_MS.
+        // Cancels if play/seeked arrives within window (buffer hiccup).
+        if (this.pauseClearTimer !== null) clearTimeout(this.pauseClearTimer);
+        this.pauseClearTimer = setTimeout(() => {
+          this.pauseClearTimer = null;
+          this.playbackQueue?.clear();
+          this.ws?.sendControl({ type: 'pause' });
+        }, this.PAUSE_DEBOUNCE_MS);
         break;
 
       case 'play':
       case 'seeked':
+        if (this.pauseClearTimer !== null) {
+          clearTimeout(this.pauseClearTimer);
+          this.pauseClearTimer = null;
+        }
         this.ws?.sendControl({ type: 'resume' });
         break;
 

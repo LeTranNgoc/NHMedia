@@ -328,17 +328,28 @@ export async function registerRelayServer(
       // is mostly belt-and-suspenders. 1000 effectively never trips for
       // real speech but still catches a fully-stalled Deepgram (100s+).
       maxFramesInFlight: 1000,
-      onBackpressure: () => {
-        const frame: ServerControlFrame = {
-          type: 'warning',
-          code: 'backpressure',
-          message: 'Audio frames dropped due to backpressure',
+      onBackpressure: (() => {
+        // Rate-limit warnings: once-saturated, fires per-frame (10/sec) → log
+        // spam. Log first occurrence + once per 10s thereafter.
+        let lastWarnAt = 0;
+        return () => {
+          const now = Date.now();
+          if (now - lastWarnAt < 10_000) return;
+          lastWarnAt = now;
+          const frame: ServerControlFrame = {
+            type: 'warning',
+            code: 'backpressure',
+            message: 'Backpressure counter saturated (frames NOT dropped — observability only)',
+          };
+          if (socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify(frame));
+          }
+          app.log.warn(
+            { userId, sessionId },
+            'Backpressure: counter saturated (no drops — sparse ASR transcripts not draining BP)',
+          );
         };
-        if (socket.readyState === socket.OPEN) {
-          socket.send(JSON.stringify(frame));
-        }
-        app.log.warn({ userId, sessionId }, 'Backpressure: dropping audio frame');
-      },
+      })(),
     });
 
     let asrStarted = false;
@@ -485,10 +496,14 @@ export async function registerRelayServer(
           }
           return;
         }
-        if (bp.shouldDrop()) {
-          // Drop frame — warning already sent by onBackpressure callback
-          return;
-        }
+        // BP saturation no longer drops frames. Dropping caused a cascade:
+        // long silence with no transcripts → counter saturated at max → drop
+        // → no audio to Deepgram → idle-close 1011 → reconnect → counter
+        // still saturated (no ACKs during reconnect) → drop → idle-close
+        // again → loop until exhausted. Deepgram has its own WS buffering;
+        // relay-level drop is net-negative. Still invoke shouldDrop() for
+        // the client-facing warning-frame side-effect (observability).
+        bp.shouldDrop();
         bp.frameSent();
         asr.sendAudio(parsed.pcm);
         return;

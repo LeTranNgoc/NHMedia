@@ -19,6 +19,13 @@ export class DeepgramNova2Provider implements ASRProvider {
   private errorCb: ((err: Error) => void) | null = null;
   private stopped = false;
   private retryCount = 0;
+  /** Deepgram WS idle-closes (code 1011) after ~10s of no audio. Even when our
+   *  client streams continuously, intermittent pauses + worklet hiccups + VAD
+   *  silence-drops can produce >10s gaps → cascade of close+reconnect that
+   *  user-visible as random dub interruptions. Periodic KeepAlive resets
+   *  Deepgram's idle timer independent of audio flow. SDK-supported pattern. */
+  private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly KEEPALIVE_INTERVAL_MS = 5000;
 
   constructor(opts: DeepgramNova2ProviderOptions) {
     this.apiKey = opts.apiKey;
@@ -64,6 +71,7 @@ export class DeepgramNova2Provider implements ASRProvider {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this._stopKeepAlive();
     if (this.socket !== null) {
       try {
         this.socket.sendCloseStream({ type: 'CloseStream' });
@@ -72,6 +80,27 @@ export class DeepgramNova2Provider implements ASRProvider {
       }
       this.socket.close();
       this.socket = null;
+    }
+  }
+
+  private _startKeepAlive(): void {
+    this._stopKeepAlive();
+    this.keepAliveTimer = setInterval(() => {
+      if (this.socket === null) return;
+      try {
+        this.socket.sendKeepAlive({ type: 'KeepAlive' });
+      } catch (err) {
+        console.warn(
+          `[deepgram] sendKeepAlive threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }, this.KEEPALIVE_INTERVAL_MS);
+  }
+
+  private _stopKeepAlive(): void {
+    if (this.keepAliveTimer !== null) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
     }
   }
 
@@ -121,6 +150,7 @@ export class DeepgramNova2Provider implements ASRProvider {
     // common over hours) leaves the socket permanently dead — audio frames
     // sink into sendMedia() while Dịch counter flatlines.
     this.retryCount = 0;
+    this._startKeepAlive();
     console.info('[deepgram] socket OPEN — ready for audio');
 
     let messageCount = 0;
@@ -148,13 +178,24 @@ export class DeepgramNova2Provider implements ASRProvider {
         return;
       }
       const transcript = raw.channel?.alternatives?.[0]?.transcript ?? '';
-      // Use speech_final (true utterance boundary) instead of is_final
-      // (intermediate "stable segment" — fires multiple times per utterance).
-      // Treating each is_final=true as a final caused the dub to speak each
-      // mid-utterance segment separately → 2-4 fragments per source sentence.
-      // speech_final fires exactly once per utterance, after the endpointing
-      // window of silence — matches the voice-over coherence we need.
-      const isUtteranceEnd = raw.speech_final === true;
+      // Utterance boundary detection — three-signal:
+      // 1. speech_final=true: Deepgram saw 300ms silence after speech (true
+      //    utterance end). Rare on continuous tech-talk content where speakers
+      //    don't pause — empirically 3 dubs per 30min video.
+      // 2. is_final=true + sentence-ending punctuation: smart_format inserts
+      //    `.` `?` `!` at natural sentence breaks. Catches sentence ends
+      //    when speaker continues straight to next sentence without 300ms gap.
+      // 3. is_final=true + transcript ≥ 100 chars: force-emit on long segments
+      //    even without sentence punctuation. Covers continuous speech that
+      //    uses commas/colons but no periods — Vietnamese transcript also
+      //    sometimes lacks `.` from Deepgram's punctuation model.
+      const hasSentenceEnd = /[.?!]\s*$/.test(transcript);
+      // 60 chars ≈ 5s of speech at 150 wpm — short enough to reduce perceived
+      // dub latency, long enough to avoid mid-clause cuts. Threshold tuning:
+      // 100→60 sau khi user vẫn thấy ~8s gián đoạn giữa câu trên continuous talk.
+      const tooLong = raw.is_final === true && transcript.length >= 60;
+      const isUtteranceEnd =
+        raw.speech_final === true || (raw.is_final === true && hasSentenceEnd) || tooLong;
       this.transcriptCb?.({
         text: transcript,
         isFinal: isUtteranceEnd,
@@ -170,6 +211,7 @@ export class DeepgramNova2Provider implements ASRProvider {
     socket.on('close', (event) => {
       const ev = event as { code?: number; reason?: string };
       console.info(`[deepgram] socket close code=${ev.code} reason=${ev.reason ?? ''}`);
+      this._stopKeepAlive();
       if (this.stopped) return; // intentional stop — no reconnect
 
       // Auth errors (e.g. 1008 Policy Violation) — do not reconnect

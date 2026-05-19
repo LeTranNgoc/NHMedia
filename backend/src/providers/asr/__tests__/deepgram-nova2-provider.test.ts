@@ -116,6 +116,52 @@ describe('DeepgramNova2Provider', () => {
     });
   });
 
+  it('isFinal=true for is_final + sentence-ending punctuation (continuous-speech fallback)', async () => {
+    await provider.start({ srcLang: 'en', sampleRate: 16000 });
+    const cb = vi.fn();
+    provider.onTranscript(cb);
+
+    // is_final=true, speech_final=false (mid-paragraph), but ends with period
+    // → treat as utterance end. Fixes "3 dubs per 30min" on continuous talks
+    // where speech_final never fires due to no 300ms silence.
+    mockSocket._emit('message', {
+      type: 'Results',
+      is_final: true,
+      speech_final: false,
+      start: 1.0,
+      channel: { alternatives: [{ transcript: 'Hello world.' }] },
+    });
+    expect(cb).toHaveBeenCalledWith({ text: 'Hello world.', isFinal: true, ts: 1000 });
+
+    cb.mockClear();
+
+    // is_final=true but NO sentence punctuation (mid-sentence segment) → not final
+    mockSocket._emit('message', {
+      type: 'Results',
+      is_final: true,
+      speech_final: false,
+      start: 2.0,
+      channel: { alternatives: [{ transcript: 'And then I saw' }] },
+    });
+    expect(cb).toHaveBeenCalledWith({ text: 'And then I saw', isFinal: false, ts: 2000 });
+
+    cb.mockClear();
+
+    // speech_final=true always wins, regardless of punctuation
+    mockSocket._emit('message', {
+      type: 'Results',
+      is_final: true,
+      speech_final: true,
+      start: 3.0,
+      channel: { alternatives: [{ transcript: 'final segment no period' }] },
+    });
+    expect(cb).toHaveBeenCalledWith({
+      text: 'final segment no period',
+      isFinal: true,
+      ts: 3000,
+    });
+  });
+
   it('onTranscript called with empty heartbeat for Metadata events (drains BP)', async () => {
     await provider.start({ srcLang: 'en', sampleRate: 16000 });
 
