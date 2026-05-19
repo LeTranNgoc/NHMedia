@@ -24,7 +24,7 @@ export class WsReceiver {
    *  audio arrival = user hears partial web-speech then full server audio
    *  ("lặp từ + bỏ từ"). Defer instead — if audio arrives within the window,
    *  drop the deferred speak silently. */
-  private readonly DEFER_WINDOW_MS = 500;
+  private readonly DEFER_WINDOW_MS = 1500;
   private deferredSpeakTimers = new Set<ReturnType<typeof setTimeout>>();
 
   constructor(
