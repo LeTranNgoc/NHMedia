@@ -115,12 +115,11 @@ export class DeepgramNova2Provider implements ASRProvider {
     // for REST endpoints, not WebSocket). Without it the WS handshake never
     // gets an upgrade response and the socket hangs CONNECTING forever.
     // interim_results / smart_format types in SDK are string 'true'/'false'.
-    // Endpointing 300ms: how long Deepgram waits for silence before firing
-    // `is_final=true`. We tried 50-100ms for lower latency but Deepgram split
-    // sentences at any natural pause ("Hello," — pause — "world") → translate
-    // saw fragments → user heard disjointed dub. 300ms aligns with Deepgram's
-    // own recommended sentence-boundary heuristic — finals match natural
-    // sentence breaks. The +250ms latency vs 50ms is worth the coherence.
+    // Endpointing 200ms (L1 tweak from 300ms): how long Deepgram waits for
+    // silence before firing `is_final=true`. 50-100ms previously caused
+    // sentence fragments. 200ms is a middle-ground: -100ms latency vs 300ms
+    // while still catching natural sentence boundaries. If fragments resurge
+    // (lặp câu rate climbs), revert to 300ms.
     const socket = await this.client.listen.v1.connect({
       model: 'nova-2',
       encoding: 'linear16',
@@ -128,7 +127,7 @@ export class DeepgramNova2Provider implements ASRProvider {
       language: opts.srcLang,
       interim_results: 'true',
       smart_format: 'true',
-      endpointing: '300',
+      endpointing: '200',
       Authorization: `Token ${this.apiKey}`,
     } as Parameters<typeof this.client.listen.v1.connect>[0]);
 
@@ -190,10 +189,11 @@ export class DeepgramNova2Provider implements ASRProvider {
       //    uses commas/colons but no periods — Vietnamese transcript also
       //    sometimes lacks `.` from Deepgram's punctuation model.
       const hasSentenceEnd = /[.?!]\s*$/.test(transcript);
-      // 60 chars ≈ 5s of speech at 150 wpm — short enough to reduce perceived
-      // dub latency, long enough to avoid mid-clause cuts. Threshold tuning:
-      // 100→60 sau khi user vẫn thấy ~8s gián đoạn giữa câu trên continuous talk.
-      const tooLong = raw.is_final === true && transcript.length >= 60;
+      // L1 tweak: 30 chars ≈ 2.5s of speech at 150 wpm — aggressive cut to
+      // reduce dub latency from ~7s to ~4-5s. Trade-off: mid-clause cuts
+      // possible on long sentences (was 60). If lặp-câu rate climbs >5%,
+      // revert to 60 or 80.
+      const tooLong = raw.is_final === true && transcript.length >= 30;
       const isUtteranceEnd =
         raw.speech_final === true || (raw.is_final === true && hasSentenceEnd) || tooLong;
       this.transcriptCb?.({
