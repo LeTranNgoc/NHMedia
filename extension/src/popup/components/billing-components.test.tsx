@@ -36,6 +36,27 @@ describe('PlanBadge', () => {
     const { container } = render(<PlanBadge tier="free" />);
     expect(container.firstChild).toHaveClass('bg-gray-100');
   });
+
+  it('renders "Starter" for starter tier with paid styling', () => {
+    const { container } = render(<PlanBadge tier="starter" />);
+    expect(screen.getByRole('status')).toHaveTextContent('Starter');
+    expect(screen.getByRole('status')).toHaveAttribute('aria-label', 'Plan: Starter');
+    expect(container.firstChild).toHaveClass('bg-amber-100');
+  });
+
+  it('renders "Standard" for standard tier with paid styling', () => {
+    const { container } = render(<PlanBadge tier="standard" />);
+    expect(screen.getByRole('status')).toHaveTextContent('Standard');
+    expect(screen.getByRole('status')).toHaveAttribute('aria-label', 'Plan: Standard');
+    expect(container.firstChild).toHaveClass('bg-amber-100');
+  });
+
+  it('renders "Unlimited" for unlimited tier with paid styling', () => {
+    const { container } = render(<PlanBadge tier="unlimited" />);
+    expect(screen.getByRole('status')).toHaveTextContent('Unlimited');
+    expect(screen.getByRole('status')).toHaveAttribute('aria-label', 'Plan: Unlimited');
+    expect(container.firstChild).toHaveClass('bg-amber-100');
+  });
 });
 
 // ── UsageMeter ────────────────────────────────────────────────────────────────

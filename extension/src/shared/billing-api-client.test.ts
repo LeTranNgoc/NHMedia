@@ -16,7 +16,12 @@ vi.stubGlobal('chrome', {
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
-import { getBillingMe, startCheckout, getUsageHistory } from './billing-api-client';
+import {
+  getBillingMe,
+  startCheckout,
+  cancelSubscription,
+  getUsageHistory,
+} from './billing-api-client';
 
 function mockOkResponse(body: unknown) {
   return Promise.resolve({
@@ -47,6 +52,7 @@ describe('getBillingMe', () => {
   it('fetches /billing/me and returns parsed response', async () => {
     const mockResponse = {
       tier: 'free',
+      customerPortalUrl: 'https://polar.sh/dashboard',
       usageToday: { secondsCaptured: 300, limitSeconds: 900, percentUsed: 33 },
     };
     mockFetch.mockReturnValueOnce(mockOkResponse(mockResponse));
@@ -61,6 +67,7 @@ describe('getBillingMe', () => {
     );
     expect(result.tier).toBe('free');
     expect(result.usageToday.secondsCaptured).toBe(300);
+    expect(result.customerPortalUrl).toBe('https://polar.sh/dashboard');
   });
 
   it('throws on 401 response', async () => {
@@ -79,36 +86,58 @@ describe('getBillingMe', () => {
 // ── startCheckout ─────────────────────────────────────────────────────────────
 
 describe('startCheckout', () => {
-  it('POSTs to /billing/checkout and opens returned URL in new tab', async () => {
-    mockFetch.mockReturnValueOnce(
-      mockOkResponse({ url: 'https://polar.sh/checkout/abc123' }),
-    );
+  it('POSTs to /billing/checkout with specified tier and opens returned URL', async () => {
+    mockFetch.mockReturnValueOnce(mockOkResponse({ url: 'https://polar.sh/checkout/abc123' }));
 
-    await startCheckout();
+    await startCheckout('starter');
 
     expect(mockFetch).toHaveBeenCalledWith(
       expect.stringContaining('/billing/checkout'),
-      expect.objectContaining({ method: 'POST' }),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ tier: 'starter' }),
+      }),
     );
     expect(chrome.tabs.create).toHaveBeenCalledWith({
       url: 'https://polar.sh/checkout/abc123',
     });
   });
 
+  it('defaults to pro tier when no tier argument is given (backward compat)', async () => {
+    mockFetch.mockReturnValueOnce(mockOkResponse({ url: 'https://polar.sh/checkout/def456' }));
+
+    await startCheckout();
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/billing/checkout'),
+      expect.objectContaining({ body: JSON.stringify({ tier: 'pro' }) }),
+    );
+  });
+
+  it('sends correct tier for each paid tier', async () => {
+    const tiers = ['starter', 'standard', 'pro', 'unlimited'] as const;
+    for (const tier of tiers) {
+      mockFetch.mockReturnValueOnce(mockOkResponse({ url: `https://polar.sh/checkout/${tier}` }));
+      await startCheckout(tier);
+      expect(mockFetch).toHaveBeenLastCalledWith(
+        expect.stringContaining('/billing/checkout'),
+        expect.objectContaining({ body: JSON.stringify({ tier }) }),
+      );
+    }
+  });
+
   it('throws when checkout API returns 503', async () => {
     mockFetch.mockReturnValueOnce(mockErrorResponse(503, 'Service unavailable'));
 
-    await expect(startCheckout()).rejects.toThrow('503');
+    await expect(startCheckout('pro')).rejects.toThrow('503');
   });
 
   // ── Critical 5: Polar URL trust ────────────────────────────────────────────
 
   it('accepts polar.sh subdomain checkout URL (sandbox)', async () => {
-    mockFetch.mockReturnValueOnce(
-      mockOkResponse({ url: 'https://sandbox.polar.sh/checkout/xyz' }),
-    );
+    mockFetch.mockReturnValueOnce(mockOkResponse({ url: 'https://sandbox.polar.sh/checkout/xyz' }));
 
-    await startCheckout();
+    await startCheckout('pro');
 
     expect(chrome.tabs.create).toHaveBeenCalledWith({
       url: 'https://sandbox.polar.sh/checkout/xyz',
@@ -116,30 +145,60 @@ describe('startCheckout', () => {
   });
 
   it('throws and does NOT open tab for attacker URL returned by backend', async () => {
-    mockFetch.mockReturnValueOnce(
-      mockOkResponse({ url: 'https://attacker.com/steal-payment' }),
-    );
+    mockFetch.mockReturnValueOnce(mockOkResponse({ url: 'https://attacker.com/steal-payment' }));
 
-    await expect(startCheckout()).rejects.toThrow('not trusted');
+    await expect(startCheckout('pro')).rejects.toThrow('not trusted');
     expect(chrome.tabs.create).not.toHaveBeenCalled();
   });
 
   it('throws and does NOT open tab for http (non-https) polar URL', async () => {
-    mockFetch.mockReturnValueOnce(
-      mockOkResponse({ url: 'http://polar.sh/checkout/abc' }),
-    );
+    mockFetch.mockReturnValueOnce(mockOkResponse({ url: 'http://polar.sh/checkout/abc' }));
 
-    await expect(startCheckout()).rejects.toThrow('not trusted');
+    await expect(startCheckout('pro')).rejects.toThrow('not trusted');
     expect(chrome.tabs.create).not.toHaveBeenCalled();
   });
 
   it('throws and does NOT open tab for malformed URL', async () => {
-    mockFetch.mockReturnValueOnce(
-      mockOkResponse({ url: 'not-a-url' }),
-    );
+    mockFetch.mockReturnValueOnce(mockOkResponse({ url: 'not-a-url' }));
 
-    await expect(startCheckout()).rejects.toThrow();
+    await expect(startCheckout('pro')).rejects.toThrow();
     expect(chrome.tabs.create).not.toHaveBeenCalled();
+  });
+});
+
+// ── cancelSubscription ────────────────────────────────────────────────────────
+
+describe('cancelSubscription', () => {
+  it('POSTs to /billing/cancel with auth header', async () => {
+    mockFetch.mockReturnValueOnce(mockOkResponse({ status: 'canceled' }));
+
+    await cancelSubscription();
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/billing/cancel'),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'Bearer test-jwt-token' }),
+      }),
+    );
+  });
+
+  it('resolves void on 200', async () => {
+    mockFetch.mockReturnValueOnce(mockOkResponse({ status: 'canceled' }));
+
+    await expect(cancelSubscription()).resolves.toBeUndefined();
+  });
+
+  it('throws on 404 (no subscription)', async () => {
+    mockFetch.mockReturnValueOnce(mockErrorResponse(404, 'No active subscription found'));
+
+    await expect(cancelSubscription()).rejects.toThrow('404');
+  });
+
+  it('throws on 503 (billing unavailable)', async () => {
+    mockFetch.mockReturnValueOnce(mockErrorResponse(503, 'Service unavailable'));
+
+    await expect(cancelSubscription()).rejects.toThrow('503');
   });
 });
 
@@ -168,9 +227,6 @@ describe('getUsageHistory', () => {
 
     await getUsageHistory();
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining('days=7'),
-      expect.anything(),
-    );
+    expect(mockFetch).toHaveBeenCalledWith(expect.stringContaining('days=7'), expect.anything());
   });
 });

@@ -18,18 +18,22 @@ Translate Voice ("the extension", "we", "us") is a Chrome browser extension that
 We collect the **minimum** data necessary to operate the service.
 
 ### 2.1 Account data (required to sign in)
+
 - **Email address** — to authenticate you via Google OAuth or magic-link.
 - **Google OAuth profile ID** — when you sign in with Google, we receive a Google-issued user ID. We do NOT receive your password, name, photo, or contact list.
 
-### 2.2 Usage data (required for free-tier quota)
-- **Seconds of audio captured per day** — to enforce the 15 minutes/day free-tier cap.
-- **Characters translated per day** — to enforce the translate-chars quota.
-- **Characters synthesized as speech per day** — to enforce the TTS-chars quota.
+### 2.2 Usage data (required for quota enforcement)
+
+- **Seconds of audio captured** — daily for free tier (15 min/day cap), monthly for paid tiers (5h / 15h / 40h / 200h per month depending on tier).
+- **Characters translated per day** — to enforce the translate-chars quota (free tier only; unlimited on paid tiers).
+- **Characters synthesized as speech per day** — to enforce the TTS-chars quota (free tier only; unlimited on paid tiers).
 
 We do **NOT** store the content of the audio, the transcripts, or the translations themselves. Only the **counts** are persisted.
 
 ### 2.3 Audio data (streamed, never stored)
+
 When you enable capture on a YouTube tab:
+
 - The extension captures the audio track of the active tab.
 - The audio is streamed in real-time to our backend via a WebSocket connection.
 - The backend forwards the audio to a third-party automatic-speech-recognition (ASR) service (Deepgram), which returns a text transcript.
@@ -39,16 +43,20 @@ When you enable capture on a YouTube tab:
 
 **Nothing in this pipeline is persisted on our servers.** Audio buffers are processed in-memory and discarded. Transcripts and translations are forwarded immediately and not logged.
 
-### 2.4 Billing data (Pro tier only)
-If you upgrade to Pro ($5/month):
+### 2.4 Billing data (paid tiers only)
+
+If you upgrade to a paid tier (Starter $4.99/mo, Standard $9.99/mo, Pro $19.99/mo, or Unlimited $39.99/mo):
+
 - Payment is processed by **Polar.sh**. Card numbers, billing address, and tax details are collected by Polar, never by us.
-- We store **only** a Polar subscription ID + status (`active` / `canceled`) + the time window the subscription is valid for. This is what we use to unlock the Pro tier on your account.
+- We store **only** a Polar subscription ID + the Polar product ID identifying your tier + status (`active` / `canceled`) + the time window the subscription is valid for. This is what we use to unlock the corresponding tier on your account.
 
 ### 2.5 Technical data
+
 - A JWT (JSON web token) is stored in `chrome.storage.local` to keep you signed in. It expires after 7 days.
 - User preferences (source language, target language, audio mode) are stored in `chrome.storage.sync` and roam across your Chrome installations.
 
 We do **NOT** collect:
+
 - Browsing history outside YouTube
 - Cookies from other sites
 - Keystrokes or clipboard content
@@ -59,15 +67,16 @@ We do **NOT** collect:
 
 ## 3. How we use the data
 
-| Data | Purpose | Legal basis (EU GDPR) |
-|---|---|---|
-| Email + OAuth ID | Authenticate sign-in, identify your account | Contract — required to deliver the service |
-| Per-day usage counts | Enforce free-tier quota; show usage in popup | Legitimate interest — prevent abuse |
-| Streamed audio | Generate the dubbed Vietnamese audio you requested | Contract — that IS the service |
-| Polar subscription ID | Unlock Pro tier when you pay | Contract |
-| JWT | Keep you signed in between sessions | Legitimate interest — UX |
+| Data                  | Purpose                                            | Legal basis (EU GDPR)                      |
+| --------------------- | -------------------------------------------------- | ------------------------------------------ |
+| Email + OAuth ID      | Authenticate sign-in, identify your account        | Contract — required to deliver the service |
+| Per-day usage counts  | Enforce free-tier quota; show usage in popup       | Legitimate interest — prevent abuse        |
+| Streamed audio        | Generate the dubbed Vietnamese audio you requested | Contract — that IS the service             |
+| Polar subscription ID | Unlock Pro tier when you pay                       | Contract                                   |
+| JWT                   | Keep you signed in between sessions                | Legitimate interest — UX                   |
 
 We do **NOT**:
+
 - Sell your data to third parties
 - Use your data for advertising or profiling
 - Train AI models on your audio, transcripts, or usage
@@ -79,15 +88,15 @@ We do **NOT**:
 
 We share data with the following processors strictly to deliver the service:
 
-| Processor | What we send | Why | Their privacy policy |
-|---|---|---|---|
-| Deepgram (US) | Audio frames (streamed, not stored by us) | Speech-to-text transcription | https://deepgram.com/privacy |
-| Google Cloud (Google LLC) | Transcript text + signed-in user's email (for billing) | Translation (Gemini), text-to-speech (Cloud Neural2), OAuth sign-in | https://policies.google.com/privacy |
-| Microsoft Azure (Microsoft) | Transcript text | Translation fallback, text-to-speech fallback | https://privacy.microsoft.com |
-| Polar Software Inc. (US) | Email + a Polar-side customer ID | Subscription billing | https://polar.sh/legal/privacy |
-| MongoDB Atlas (MongoDB Inc.) | Account record, usage counts, subscription state | Database hosting | https://www.mongodb.com/legal/privacy/privacy-policy |
-| Fly.io (US) | Backend server hosting | Application runtime | https://fly.io/legal/privacy-policy/ |
-| Resend (US) | Email address + a magic-link token | Send sign-in emails | https://resend.com/legal/privacy-policy |
+| Processor                    | What we send                                           | Why                                                                 | Their privacy policy                                 |
+| ---------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------- | ---------------------------------------------------- |
+| Deepgram (US)                | Audio frames (streamed, not stored by us)              | Speech-to-text transcription                                        | https://deepgram.com/privacy                         |
+| Google Cloud (Google LLC)    | Transcript text + signed-in user's email (for billing) | Translation (Gemini), text-to-speech (Cloud Neural2), OAuth sign-in | https://policies.google.com/privacy                  |
+| Microsoft Azure (Microsoft)  | Transcript text                                        | Translation fallback, text-to-speech fallback                       | https://privacy.microsoft.com                        |
+| Polar Software Inc. (US)     | Email + a Polar-side customer ID                       | Subscription billing                                                | https://polar.sh/legal/privacy                       |
+| MongoDB Atlas (MongoDB Inc.) | Account record, usage counts, subscription state       | Database hosting                                                    | https://www.mongodb.com/legal/privacy/privacy-policy |
+| Fly.io (US)                  | Backend server hosting                                 | Application runtime                                                 | https://fly.io/legal/privacy-policy/                 |
+| Resend (US)                  | Email address + a magic-link token                     | Send sign-in emails                                                 | https://resend.com/legal/privacy-policy              |
 
 We do not transfer your data to any other party.
 
@@ -95,14 +104,14 @@ We do not transfer your data to any other party.
 
 ## 5. Data retention
 
-| Data | Retained for |
-|---|---|
-| Account record (email, OAuth ID) | Until you delete your account |
-| Daily usage counters | 30 days, then deleted |
-| Subscription records | 7 years (legal accounting requirement) |
-| Magic-link tokens | 15 minutes (auto-expired in DB via TTL index) |
-| Streamed audio + transcripts | 0 — never stored |
-| Logs | 14 days |
+| Data                             | Retained for                                  |
+| -------------------------------- | --------------------------------------------- |
+| Account record (email, OAuth ID) | Until you delete your account                 |
+| Daily usage counters             | 30 days, then deleted                         |
+| Subscription records             | 7 years (legal accounting requirement)        |
+| Magic-link tokens                | 15 minutes (auto-expired in DB via TTL index) |
+| Streamed audio + transcripts     | 0 — never stored                              |
+| Logs                             | 14 days                                       |
 
 When you delete your account, all data except subscription records is removed within 7 days. Subscription records are retained because some jurisdictions require us to keep billing history.
 
@@ -144,6 +153,7 @@ No system is 100% secure. If you discover a vulnerability, please email **`<YOUR
 ## 9. Changes to this policy
 
 If we change this policy, we will:
+
 - Update the "Last updated" date at the top.
 - For material changes, send an in-extension notification + email to your account address.
 - Continued use after the effective date constitutes acceptance.
@@ -160,6 +170,7 @@ If we change this policy, we will:
 ---
 
 > **Where to host this file:**
+>
 > 1. Copy this markdown to a public URL — GitHub Pages, Netlify drop, Vercel, hoặc subpath của domain (vd `translate-voice.io/privacy`).
 > 2. URL phải HTTPS + publicly accessible (không sau auth).
 > 3. Paste URL vào Chrome Web Store submission form ("Privacy policy URL").

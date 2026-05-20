@@ -27,6 +27,11 @@ const TEST_ENV = {
   NODE_ENV: 'test',
   CORS_ORIGINS: 'chrome-extension://test',
   POLAR_WEBHOOK_SECRET: WEBHOOK_SECRET,
+  // Product IDs needed for /billing/checkout tier routing
+  POLAR_PRODUCT_ID_STARTER: 'prod_test_starter',
+  POLAR_PRODUCT_ID_STANDARD: 'prod_test_standard',
+  POLAR_PRODUCT_ID_PRO: 'prod_test_pro',
+  POLAR_PRODUCT_ID_UNLIMITED: 'prod_test_unlimited',
 };
 
 function makeSignature(body: string): string {
@@ -42,9 +47,12 @@ let usageTracker: UsageTracker;
 
 const mockPolarClient: PolarClient = {
   createCheckoutSession: vi.fn().mockResolvedValue({ url: 'https://polar.sh/checkout/test123' }),
-  getCheckoutUrl: vi.fn().mockImplementation((userId: string, email: string) =>
-    `https://buy.polar.sh/test-product?customer_external_id=${userId}&customer_email=${encodeURIComponent(email)}`,
-  ),
+  getCheckoutUrl: vi
+    .fn()
+    .mockImplementation(
+      (userId: string, email: string) =>
+        `https://buy.polar.sh/test-product?customer_external_id=${userId}&customer_email=${encodeURIComponent(email)}`,
+    ),
   getSubscription: vi.fn().mockResolvedValue({}),
 } as unknown as PolarClient;
 
@@ -56,16 +64,14 @@ beforeAll(async () => {
 
   await db.collection('users').createIndex({ email: 1 }, { unique: true });
   await db.collection('magic_link_tokens').createIndex({ tokenHash: 1 });
-  await db
-    .collection('magic_link_tokens')
-    .createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await db.collection('magic_link_tokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await db.collection('usage_log').createIndex({ userId: 1, date: 1 });
-  await db
-    .collection('subscriptions')
-    .createIndex({ polarSubscriptionId: 1 }, { unique: true });
+  await db.collection('subscriptions').createIndex({ polarSubscriptionId: 1 }, { unique: true });
   await db.collection('subscriptions').createIndex({ userId: 1 });
   await db.collection('webhook_events').createIndex({ key: 1 }, { unique: true });
-  await db.collection('webhook_events').createIndex({ processedAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 });
+  await db
+    .collection('webhook_events')
+    .createIndex({ processedAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 });
 
   TEST_ENV.MONGO_URI = mongod.getUri();
 
@@ -165,13 +171,13 @@ describe('GET /billing/me', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json<{
       tier: string;
-      usageToday: { limitSeconds: null; percentUsed: null };
-      limits: { seconds: null; translateChars: null; ttsChars: null };
+      usageToday: { limitSeconds: number; percentUsed: number };
+      limits: { seconds: number; translateChars: null; ttsChars: null };
     }>();
     expect(body.tier).toBe('pro');
-    expect(body.usageToday.limitSeconds).toBeNull();
-    expect(body.usageToday.percentUsed).toBeNull();
-    expect(body.limits.seconds).toBeNull();
+    // Pro now has a monthly cap (144000s = 40h); no longer unlimited
+    expect(body.usageToday.limitSeconds).toBe(144000);
+    expect(body.limits.seconds).toBe(144000);
     expect(body.limits.translateChars).toBeNull();
     expect(body.limits.ttsChars).toBeNull();
   });
@@ -206,6 +212,7 @@ describe('POST /billing/checkout', () => {
     expect(mockPolarClient.createCheckoutSession).toHaveBeenCalledWith({
       userId,
       customerEmail: 'checkout@example.com',
+      productId: 'prod_test_pro',
     });
   });
 
@@ -375,7 +382,7 @@ describe('GET /billing/usage', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    const body = res.json<Array<{ date: string; secondsCaptured: number }>>() ;
+    const body = res.json<Array<{ date: string; secondsCaptured: number }>>();
     expect(body).toHaveLength(7);
     expect(body.every((d) => d.secondsCaptured === 0)).toBe(true);
   });

@@ -26,11 +26,22 @@ const envSchema = z.object({
   POLAR_API_KEY: z.string().optional().default(''),
   POLAR_WEBHOOK_SECRET: z.string().optional().default(''),
   POLAR_PRODUCT_ID_PRO: z.string().optional().default(''),
+  /** Polar product IDs for the 4 paid tiers. No defaults — fail-fast in production. */
+  POLAR_PRODUCT_ID_STARTER: z.string().optional().default(''),
+  POLAR_PRODUCT_ID_STANDARD: z.string().optional().default(''),
+  POLAR_PRODUCT_ID_UNLIMITED: z.string().optional().default(''),
   /** Hosted checkout link from Polar dashboard (e.g. https://buy.polar.sh/<slug>).
    *  Used to build checkout URL with customer_external_id + customer_email params.
    *  If empty, /billing/checkout-url returns 503. */
   POLAR_PRO_CHECKOUT_URL: z.string().optional().default(''),
+  /** Polar customer portal URL for managing subscriptions. */
+  POLAR_CUSTOMER_PORTAL_URL: z.string().optional().default('https://polar.sh/dashboard'),
   POLAR_SERVER: z.enum(['sandbox', 'production']).optional().default('production'),
+  /** Monthly cap in seconds for paid tiers. */
+  STARTER_TIER_MONTHLY_LIMIT_SECONDS: z.coerce.number().default(18000),
+  STANDARD_TIER_MONTHLY_LIMIT_SECONDS: z.coerce.number().default(54000),
+  PRO_TIER_MONTHLY_LIMIT_SECONDS: z.coerce.number().default(144000),
+  UNLIMITED_TIER_MONTHLY_LIMIT_SECONDS: z.coerce.number().default(720000),
   AZURE_TRANSLATOR_KEY: z.string().optional().default(''),
   /** Groq API key — free tier 30 RPM, email-only signup (no CC). */
   GROQ_API_KEY: z.string().optional().default(''),
@@ -76,6 +87,9 @@ const PRODUCTION_REQUIRED_SECRETS: Array<keyof Env> = [
   'POLAR_API_KEY',
   'POLAR_WEBHOOK_SECRET',
   'POLAR_PRODUCT_ID_PRO',
+  'POLAR_PRODUCT_ID_STARTER',
+  'POLAR_PRODUCT_ID_STANDARD',
+  'POLAR_PRODUCT_ID_UNLIMITED',
 ];
 
 /**

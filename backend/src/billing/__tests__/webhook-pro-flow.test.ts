@@ -6,7 +6,12 @@ import { WebhookHandler, verifyWebhookSignature } from '../webhook-handler.js';
 import { subscriptionCollection } from '../../db/models/subscription.js';
 
 const WEBHOOK_SECRET = 'test-webhook-secret-32-chars-long!!';
-const PRO_PRODUCT_ID = 'prod_pro_test_123';
+// Must match the productIdPro configured in makeHandler() below — webhook resolver
+// looks up incoming product_id against this exact value to map to tier='pro'.
+const PRO_PRODUCT_ID = 'prod_pro_test';
+const STARTER_PRODUCT_ID = 'prod_starter_test';
+const STANDARD_PRODUCT_ID = 'prod_standard_test';
+const UNLIMITED_PRODUCT_ID = 'prod_unlimited_test';
 
 let mongod: MongoMemoryServer;
 let client: MongoClient;
@@ -40,6 +45,12 @@ function makeHandler(): WebhookHandler {
     webhookSecret: WEBHOOK_SECRET,
     db,
     resolveUserId: (id) => new ObjectId(id),
+    productIds: {
+      productIdStarter: 'prod_starter_test',
+      productIdStandard: 'prod_standard_test',
+      productIdPro: 'prod_pro_test',
+      productIdUnlimited: 'prod_unlimited_test',
+    },
   });
 }
 
@@ -73,9 +84,7 @@ describe('Pro subscription webhook flow', () => {
   });
 
   it('HMAC verify: matching signature returns true, mismatched returns false', () => {
-    const body = Buffer.from(
-      JSON.stringify({ type: 'subscription.created', id: 'evt_hmac_test' }),
-    );
+    const body = Buffer.from(JSON.stringify({ type: 'subscription.created', id: 'evt_hmac_test' }));
     const validSig = createHmac('sha256', WEBHOOK_SECRET).update(body).digest('hex');
 
     expect(verifyWebhookSignature(body, validSig, WEBHOOK_SECRET)).toBe(true);
@@ -137,7 +146,9 @@ describe('Pro subscription webhook flow', () => {
     });
 
     expect(result.status).toBe('processed');
-    const doc = await subscriptionCollection(db).findOne({ polarSubscriptionId: 'sub_pro_cancel_001' });
+    const doc = await subscriptionCollection(db).findOne({
+      polarSubscriptionId: 'sub_pro_cancel_001',
+    });
     expect(doc?.status).toBe('canceled');
     // tier preserved (cancelation doesn't change tier — access reverts at period end)
     expect(doc?.tier).toBe('pro');
@@ -163,6 +174,119 @@ describe('Pro subscription webhook flow', () => {
     const count = await db.collection('subscriptions').countDocuments();
     expect(count).toBe(0);
 
+    consoleSpy.mockRestore();
+  });
+
+  // ── Regression tests for review-260520 fixes ───────────────────────────────
+
+  it('C1 regression: subscription.created with starter productId → tier=starter + polarProductId persisted', async () => {
+    const userId = new ObjectId().toString();
+    const handler = makeHandler();
+
+    await handler.handle({
+      id: 'evt_starter_001',
+      type: 'subscription.created',
+      data: {
+        id: 'sub_starter_001',
+        product_id: STARTER_PRODUCT_ID,
+        status: 'active',
+        started_at: '2026-05-01T00:00:00Z',
+        current_period_end: '2026-06-01T00:00:00Z',
+        metadata: { userId },
+      },
+    });
+
+    const doc = await subscriptionCollection(db).findOne({
+      polarSubscriptionId: 'sub_starter_001',
+    });
+    expect(doc?.tier).toBe('starter');
+    expect(doc?.polarProductId).toBe(STARTER_PRODUCT_ID);
+  });
+
+  it.each([
+    { productId: STANDARD_PRODUCT_ID, expectedTier: 'standard' as const },
+    { productId: UNLIMITED_PRODUCT_ID, expectedTier: 'unlimited' as const },
+  ])(
+    'C1 regression: subscription.created with $productId → tier=$expectedTier',
+    async ({ productId, expectedTier }) => {
+      const userId = new ObjectId().toString();
+      const handler = makeHandler();
+      const subId = `sub_${expectedTier}_001`;
+
+      await handler.handle({
+        id: `evt_${expectedTier}_001`,
+        type: 'subscription.created',
+        data: {
+          id: subId,
+          product_id: productId,
+          status: 'active',
+          metadata: { userId },
+        },
+      });
+
+      const doc = await subscriptionCollection(db).findOne({ polarSubscriptionId: subId });
+      expect(doc?.tier).toBe(expectedTier);
+      expect(doc?.polarProductId).toBe(productId);
+    },
+  );
+
+  it('C1 regression: subscription.updated with new product_id (Starter→Pro upgrade) updates stored tier', async () => {
+    const userIdObj = new ObjectId();
+    const subId = 'sub_upgrade_001';
+
+    // Pre-insert as Starter
+    await subscriptionCollection(db).insertOne({
+      _id: new ObjectId(),
+      userId: userIdObj,
+      polarSubscriptionId: subId,
+      tier: 'starter',
+      polarProductId: STARTER_PRODUCT_ID,
+      status: 'active',
+      startedAt: new Date('2026-05-01'),
+      endsAt: new Date('2026-06-01'),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const handler = makeHandler();
+    await handler.handle({
+      id: 'evt_upgrade_001',
+      type: 'subscription.updated',
+      data: {
+        id: subId,
+        product_id: PRO_PRODUCT_ID,
+        status: 'active',
+        current_period_end: '2026-07-01T00:00:00Z',
+      },
+    });
+
+    const doc = await subscriptionCollection(db).findOne({ polarSubscriptionId: subId });
+    expect(doc?.tier).toBe('pro');
+    expect(doc?.polarProductId).toBe(PRO_PRODUCT_ID);
+  });
+
+  it('C1 regression: subscription.created with unknown product_id falls back to pro + warn', async () => {
+    const userId = new ObjectId().toString();
+    const handler = makeHandler();
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await handler.handle({
+      id: 'evt_unknown_001',
+      type: 'subscription.created',
+      data: {
+        id: 'sub_unknown_001',
+        product_id: 'prod_unknown_legacy',
+        status: 'active',
+        metadata: { userId },
+      },
+    });
+
+    const doc = await subscriptionCollection(db).findOne({
+      polarSubscriptionId: 'sub_unknown_001',
+    });
+    expect(doc?.tier).toBe('pro');
+    expect(doc?.polarProductId).toBe('prod_unknown_legacy');
+    expect(consoleSpy).toHaveBeenCalled();
     consoleSpy.mockRestore();
   });
 });

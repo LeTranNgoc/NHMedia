@@ -1,8 +1,14 @@
-import type { BillingMeResponse, CheckoutResponse, UsageSummary } from '@translate-voice/shared';
+import type {
+  BillingMeResponse,
+  CheckoutResponse,
+  Tier,
+  UsageSummary,
+} from '@translate-voice/shared';
 
 // Env var injected at build time by WXT. Default keeps local dev working.
 const API_BASE: string =
-  (typeof import.meta.env !== 'undefined' && (import.meta.env['WXT_API_BASE'] as string | undefined)) ||
+  (typeof import.meta.env !== 'undefined' &&
+    (import.meta.env['WXT_API_BASE'] as string | undefined)) ||
   'http://localhost:3000';
 
 /**
@@ -60,17 +66,28 @@ function assertPolarUrl(url: string): void {
 }
 
 /**
- * POST /billing/checkout — create a Polar checkout session.
+ * POST /billing/checkout — create a Polar checkout session for the given tier.
  * Opens the returned URL in a new tab after validating it's a polar.sh URL.
+ *
+ * @param tier - the paid tier to check out. Defaults to 'pro' for backward compat.
  */
-export async function startCheckout(): Promise<void> {
+export async function startCheckout(tier: Exclude<Tier, 'free'> = 'pro'): Promise<void> {
   const result = await apiFetch<CheckoutResponse>('/billing/checkout', {
     method: 'POST',
-    body: JSON.stringify({ tier: 'pro' }),
+    body: JSON.stringify({ tier }),
   });
 
   assertPolarUrl(result.url);
   await chrome.tabs.create({ url: result.url });
+}
+
+/**
+ * POST /billing/cancel — cancel the authenticated user's active subscription.
+ * Idempotent: safe to call if already canceled.
+ * Throws on network error or 5xx.
+ */
+export async function cancelSubscription(): Promise<void> {
+  await apiFetch<unknown>('/billing/cancel', { method: 'POST' });
 }
 
 /**

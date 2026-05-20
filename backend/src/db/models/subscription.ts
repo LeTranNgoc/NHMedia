@@ -1,10 +1,14 @@
 import type { Collection, Db, ObjectId } from 'mongodb';
 
+export type SubscriptionTier = 'free' | 'starter' | 'standard' | 'pro' | 'unlimited';
+
 export interface Subscription {
   _id: ObjectId;
   userId: ObjectId;
   polarSubscriptionId: string;
-  tier: 'pro';
+  tier: SubscriptionTier;
+  /** Polar product ID — used to re-derive tier at read time. Optional for legacy rows. */
+  polarProductId?: string;
   status: 'active' | 'canceled' | 'expired';
   startedAt: Date;
   /** null while active with no end date; set when canceled/expired */

@@ -25,12 +25,12 @@ beforeAll(async () => {
   client = new MongoClient(mongod.getUri());
   await client.connect();
   db = client.db('test_webhook');
-  await db
-    .collection('subscriptions')
-    .createIndex({ polarSubscriptionId: 1 }, { unique: true });
+  await db.collection('subscriptions').createIndex({ polarSubscriptionId: 1 }, { unique: true });
   await db.collection('subscriptions').createIndex({ userId: 1 });
   await db.collection('webhook_events').createIndex({ key: 1 }, { unique: true });
-  await db.collection('webhook_events').createIndex({ processedAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 });
+  await db
+    .collection('webhook_events')
+    .createIndex({ processedAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 });
 });
 
 afterAll(async () => {
@@ -89,6 +89,12 @@ function makeHandler() {
     webhookSecret: TEST_SECRET,
     db,
     resolveUserId: (id) => new ObjectId(id),
+    productIds: {
+      productIdStarter: 'prod_starter_test',
+      productIdStandard: 'prod_standard_test',
+      productIdPro: 'prod_pro_test',
+      productIdUnlimited: 'prod_unlimited_test',
+    },
   });
 }
 

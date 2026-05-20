@@ -15,6 +15,13 @@ export interface PolarClientOptions {
 export interface CheckoutSessionParams {
   userId: string;
   customerEmail?: string;
+  /** Override which product to create a checkout session for. Defaults to productIdPro. */
+  productId?: string;
+}
+
+export interface CancelSubscriptionResult {
+  status: 'canceled';
+  endsAt: Date | null;
 }
 
 export interface CheckoutSessionResult {
@@ -40,14 +47,16 @@ export class PolarClient {
   }
 
   /**
-   * Create a Polar checkout session for the Pro product.
+   * Create a Polar checkout session.
+   * Uses params.productId if provided, otherwise falls back to productIdPro.
    * Returns the hosted checkout URL after validating it originates from polar.sh.
    * Throws on Polar API failure or if the returned URL is not on an allowed host.
    * Caller should catch and return 503.
    */
   async createCheckoutSession(params: CheckoutSessionParams): Promise<CheckoutSessionResult> {
+    const productId = params.productId ?? this.productIdPro;
     const session = await this.client.checkouts.create({
-      products: [this.productIdPro],
+      products: [productId],
       customerEmail: params.customerEmail,
       metadata: { userId: params.userId },
     });
@@ -99,5 +108,32 @@ export class PolarClient {
    */
   async getSubscription(polarSubscriptionId: string): Promise<unknown> {
     return this.client.subscriptions.get({ id: polarSubscriptionId });
+  }
+
+  /**
+   * Cancel a Polar subscription by its Polar subscription ID.
+   * Returns { status: 'canceled', endsAt } from the Polar response.
+   * Does NOT throw on 404 (already canceled) — handles gracefully.
+   */
+  async cancelSubscription(polarSubscriptionId: string): Promise<CancelSubscriptionResult> {
+    try {
+      const result = await this.client.subscriptions.revoke({ id: polarSubscriptionId });
+      const raw = result as unknown as { endsAt?: string | null; endedAt?: string | null };
+      const endsAtStr = raw.endsAt ?? raw.endedAt ?? null;
+      return {
+        status: 'canceled',
+        endsAt: endsAtStr ? new Date(endsAtStr) : null,
+      };
+    } catch (err: unknown) {
+      // 404 = already canceled — treat gracefully
+      const status =
+        typeof err === 'object' && err !== null && 'statusCode' in err
+          ? (err as { statusCode: number }).statusCode
+          : null;
+      if (status === 404) {
+        return { status: 'canceled', endsAt: null };
+      }
+      throw err;
+    }
   }
 }

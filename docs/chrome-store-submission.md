@@ -7,12 +7,14 @@
 ## 1. Pre-submission hard requirements
 
 ### 1.1 Developer account
+
 - [ ] Đăng ký tại https://chrome.google.com/webstore/devconsole/ ($5 one-time fee, accept-only)
 - [ ] Verified email khớp với owner của repo `LeTranNgoc/NHMedia`
 - [ ] 2FA enabled (Chrome Web Store yêu cầu)
 - [ ] Payment profile setup (cần cho future tier feature, không bắt buộc launch v1)
 
 ### 1.2 Host privacy policy
+
 - [ ] URL HTTPS, publicly accessible, không sau auth wall
 - [ ] Tùy chọn host:
   - GitHub Pages: `https://letranngoc.github.io/NHMedia/privacy` (cheapest, manual edit)
@@ -22,15 +24,16 @@
 - [ ] URL phải stable — Chrome reject nếu 404
 
 ### 1.3 Asset files (graphics)
-| Asset | Spec | Status | Notes |
-|---|---|---|---|
-| Icon 16×16 PNG | 16×16, RGBA, ≤16KB | ❌ Placeholder | Cho extension tray |
-| Icon 48×48 PNG | 48×48, RGBA, ≤32KB | ❌ Placeholder | Cho extension manage page |
-| Icon 128×128 PNG | 128×128, RGBA, ≤128KB | ❌ Placeholder | Cho store listing |
-| Promo tile small | 440×280 PNG/JPG, ≤1MB | ❌ Chưa có | Bắt buộc nếu featured |
-| Promo tile large (optional) | 920×680 | ❌ | Để sau |
-| Promo tile marquee (optional) | 1400×560 | ❌ | Chỉ cần khi featured |
-| Screenshots | 1280×800 hoặc 640×400, PNG/JPG, 1-5 ảnh | ❌ Chưa có | Bắt buộc ≥1 |
+
+| Asset                         | Spec                                    | Status         | Notes                     |
+| ----------------------------- | --------------------------------------- | -------------- | ------------------------- |
+| Icon 16×16 PNG                | 16×16, RGBA, ≤16KB                      | ❌ Placeholder | Cho extension tray        |
+| Icon 48×48 PNG                | 48×48, RGBA, ≤32KB                      | ❌ Placeholder | Cho extension manage page |
+| Icon 128×128 PNG              | 128×128, RGBA, ≤128KB                   | ❌ Placeholder | Cho store listing         |
+| Promo tile small              | 440×280 PNG/JPG, ≤1MB                   | ❌ Chưa có     | Bắt buộc nếu featured     |
+| Promo tile large (optional)   | 920×680                                 | ❌             | Để sau                    |
+| Promo tile marquee (optional) | 1400×560                                | ❌             | Chỉ cần khi featured      |
+| Screenshots                   | 1280×800 hoặc 640×400, PNG/JPG, 1-5 ảnh | ❌ Chưa có     | Bắt buộc ≥1               |
 
 Xem `docs/icon-design-brief.md` cho concept icon. Screenshots cần extension chạy thực tế (sau khi backend deploy).
 
@@ -41,6 +44,7 @@ Xem `docs/icon-design-brief.md` cho concept icon. Screenshots cần extension ch
 ### 2.1 Manifest fields
 
 **`name`:** `Translate Voice — Vietnamese voice-over for YouTube`
+
 - Limit: 75 char (đang dùng 50)
 - Tránh emoji (Chrome cho phép nhưng mobile render lỗi)
 
@@ -72,8 +76,11 @@ Translate Voice puts a real-time Vietnamese voice-over on top of any YouTube vid
 ✓ Privacy-respecting — captured audio never stored, only streamed for translation
 
 ═══ PRICING ═══
-• Free tier: 15 minutes/day of dubbed audio
-• Pro $5/month: unlimited dubbing, priority pipeline
+• Free: 15 minutes/day
+• Starter $4.99/month: 5 hours/month
+• Standard $9.99/month: 15 hours/month
+• Pro $19.99/month: 40 hours/month
+• Unlimited $39.99/month: 200 hours/month
 
 ═══ HOW IT'S DIFFERENT ═══
 Most translation extensions only do text subtitles. Translate Voice generates actual Vietnamese SPEECH that plays alongside the original — useful for cooking videos, podcasts, lectures, anything where you want your eyes free and just want to listen.
@@ -105,8 +112,11 @@ Translate Voice phủ giọng nói tiếng Việt real-time lên bất kỳ vide
 ✓ Tôn trọng quyền riêng tư — audio capture không lưu trữ, chỉ stream để dịch
 
 ═══ GIÁ ═══
-• Free: 15 phút/ngày lồng tiếng
-• Pro $5/tháng: không giới hạn, pipeline ưu tiên
+• Miễn phí: 15 phút/ngày
+• Starter $4.99/tháng: 5 giờ/tháng
+• Standard $9.99/tháng: 15 giờ/tháng
+• Pro $19.99/tháng: 40 giờ/tháng
+• Unlimited $39.99/tháng: 200 giờ/tháng
 
 ═══ KHÁC BIỆT ═══
 Đa số extension dịch chỉ làm phụ đề text. Translate Voice tạo GIỌNG NÓI tiếng Việt thật, phát song song với audio gốc — hữu ích cho video nấu ăn, podcast, bài giảng, mọi khi bạn muốn rảnh mắt mà chỉ cần nghe.
@@ -121,11 +131,13 @@ Phiên bản closed beta. Wave 1 chỉ 50 user được mời. Có thể vẫn c
 ```
 
 ### 2.3 Category + tags
+
 - **Primary category:** Productivity
 - **Secondary:** Accessibility (Vietnamese voice serves visual impairment + language learners)
 - **Tags:** vietnamese, translation, dubbing, accessibility, youtube, voice-over, learning, language
 
 ### 2.4 Single purpose statement
+
 Chrome Web Store yêu cầu **"single purpose"** — 1 dòng:
 
 > "Provides real-time Vietnamese voice-over (audio dubbing) for YouTube videos."
@@ -139,21 +151,27 @@ Không phải multi-tool. Permissions justify trong section 3.
 Mỗi permission trong `manifest.json` cần lý giải trong submission form. Copy-paste verbatim:
 
 ### `tabCapture`
+
 > "Capture the audio track of the active YouTube tab to send to our translation service. Audio is streamed in real-time and never stored. Only the active tab is captured, only after the user explicitly enables the extension via the popup or the in-page badge."
 
 ### `offscreen`
+
 > "Run an offscreen document to process audio in a separate context with access to AudioContext + WebSocket. Required because tab-captured MediaStreams cannot be handled directly by service workers in MV3. The offscreen document is created lazily — only after the user enables capture."
 
 ### `storage`
+
 > "Persist user preferences (source language, target language, audio mode) via chrome.storage.sync, and store the auth JWT in chrome.storage.local. Both are scoped to this extension and never shared."
 
 ### `identity`
+
 > "Initiate Google OAuth sign-in via chrome.identity.launchWebAuthFlow. Required so the user can authenticate without sharing their password with our extension."
 
 ### `activeTab`
+
 > "Inject the in-page badge + subtitle overlay only into the active YouTube tab when the user explicitly enables capture. No background scanning of tabs."
 
 ### Host permission `*://*.youtube.com/*`
+
 > "Inject the content script that displays the badge, reads the YouTube caption track (when available), and renders the bilingual subtitle overlay on YouTube watch pages. Limited to youtube.com — no other sites."
 
 ---
@@ -162,17 +180,17 @@ Mỗi permission trong `manifest.json` cần lý giải trong submission form. C
 
 Chrome Web Store hỏi 10+ data-handling questions. Câu trả lời cho extension này:
 
-| Question | Answer |
-|---|---|
-| Personally identifiable information collected? | YES — Email (sign-in only) |
-| Health information? | NO |
-| Financial information? | NO (payment processed by Polar.sh, never touches our extension) |
-| Authentication information? | YES — Google OAuth tokens, magic-link JWT |
-| Personal communications? | NO |
-| Location? | NO |
-| Web history? | NO |
-| User activity? | YES — usage seconds + translate/TTS character counts per user per day (for quota enforcement) |
-| Website content? | YES — audio of YouTube videos the user watches (streamed for translation, never stored) |
+| Question                                       | Answer                                                                                        |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Personally identifiable information collected? | YES — Email (sign-in only)                                                                    |
+| Health information?                            | NO                                                                                            |
+| Financial information?                         | NO (payment processed by Polar.sh, never touches our extension)                               |
+| Authentication information?                    | YES — Google OAuth tokens, magic-link JWT                                                     |
+| Personal communications?                       | NO                                                                                            |
+| Location?                                      | NO                                                                                            |
+| Web history?                                   | NO                                                                                            |
+| User activity?                                 | YES — usage seconds + translate/TTS character counts per user per day (for quota enforcement) |
+| Website content?                               | YES — audio of YouTube videos the user watches (streamed for translation, never stored)       |
 
 **Single purpose attestation:** ✅ Tick "Yes — this extension has a single purpose"
 
@@ -208,6 +226,7 @@ Chrome Web Store hỏi 10+ data-handling questions. Câu trả lời cho extensi
 8. **Restart backend** + verify rejected extension ID không kết nối được
 
 ### Rejection-prone reasons (Chrome strict)
+
 - Permission không justify rõ ràng (vd. xin `tabs` nhưng không dùng) → reject
 - Privacy policy URL 404 hoặc behind auth → reject
 - Icons placeholder/blank → reject

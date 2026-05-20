@@ -116,11 +116,16 @@ describe('UsageTracker.getToday', () => {
     const userObjId = new ObjectId(userId);
 
     // Use updateOne to insert properly
-    await db.collection('usage_log').updateOne(
-      { userId: userObjId, date: utcDateString() },
-      { $set: { secondsCaptured: 500, createdAt: new Date() }, $setOnInsert: { userId: userObjId } },
-      { upsert: true },
-    );
+    await db
+      .collection('usage_log')
+      .updateOne(
+        { userId: userObjId, date: utcDateString() },
+        {
+          $set: { secondsCaptured: 500, createdAt: new Date() },
+          $setOnInsert: { userId: userObjId },
+        },
+        { upsert: true },
+      );
 
     // Tick 60s in memory (not flushed)
     tracker.tick(userId, 60);
@@ -135,11 +140,13 @@ describe('UsageTracker.getToday', () => {
     const userId = new ObjectId().toString();
     const userObjId = new ObjectId(userId);
 
-    await db.collection('usage_log').updateOne(
-      { userId: userObjId, date: utcDateString() },
-      { $set: { secondsCaptured: 300, createdAt: new Date() } },
-      { upsert: true },
-    );
+    await db
+      .collection('usage_log')
+      .updateOne(
+        { userId: userObjId, date: utcDateString() },
+        { $set: { secondsCaptured: 300, createdAt: new Date() } },
+        { upsert: true },
+      );
 
     const result = await tracker.getToday(userId);
     expect(result.seconds).toBe(300);
@@ -225,9 +232,9 @@ describe('UsageTracker.getLimit', () => {
     expect(limits.ttsChars).toBe(FREE_TIER_LIMIT_TTS_CHARS);
   });
 
-  it('returns all-null limits for pro tier (unlimited)', () => {
+  it('returns 144000s cap for pro tier (monthly, semantic change from unlimited)', () => {
     const limits = tracker.getLimit('pro');
-    expect(limits.seconds).toBeNull();
+    expect(limits.seconds).toBe(144000);
     expect(limits.translateChars).toBeNull();
     expect(limits.ttsChars).toBeNull();
   });
@@ -380,9 +387,9 @@ describe('UsageTracker.getLimit — multi-kind', () => {
     });
   });
 
-  it('getLimit(pro) returns all-null limits', () => {
+  it('getLimit(pro) returns 144000s monthly cap (semantic change from unlimited)', () => {
     const limits = tracker.getLimit('pro');
-    expect(limits).toEqual({ seconds: null, translateChars: null, ttsChars: null });
+    expect(limits).toEqual({ seconds: 144000, translateChars: null, ttsChars: null });
   });
 });
 
@@ -411,7 +418,7 @@ describe('checkUsageGate — multi-kind', () => {
     expect(result.reason).toBe('quota_exceeded');
   });
 
-  it('Pro tier always allowed regardless of usage', async () => {
+  it('Pro tier allowed when under monthly cap', async () => {
     const userId = new ObjectId().toString();
     const userObjId = new ObjectId(userId);
 
@@ -428,12 +435,14 @@ describe('checkUsageGate — multi-kind', () => {
       updatedAt: new Date(),
     });
 
-    // Seed excessive usage — should not matter for pro
+    // Seed usage under the new 40h/month cap (default 144000s). 100000s ≈ 27.8h.
+    // Pro tier semantic changed: was unlimited, now monthly-capped at 40h.
+    // Char limits unchanged (null = unlimited) for paid tiers.
     await db.collection('usage_log').updateOne(
       { userId: userObjId, date: utcDateString() },
       {
         $set: {
-          secondsCaptured: 999999,
+          secondsCaptured: 100000,
           translateCharsToday: 999999,
           ttsCharsToday: 999999,
           createdAt: new Date(),

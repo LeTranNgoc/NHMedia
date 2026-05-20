@@ -141,7 +141,14 @@ export function MainView() {
   };
 
   const isOn = status !== 'idle' && status !== 'error';
-  const isPro = billing?.tier === 'pro';
+  const isPaid = billing !== null && billing.tier !== 'free';
+  const paidLabel = (() => {
+    if (!isPaid || billing === null) return '';
+    const hours =
+      billing.limits.seconds !== null ? Math.round(billing.limits.seconds / 3600) : null;
+    const name = billing.tier.charAt(0).toUpperCase() + billing.tier.slice(1);
+    return hours !== null ? `${name} — ${hours}h/tháng` : name;
+  })();
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -158,11 +165,7 @@ export function MainView() {
         />
       </div>
 
-      <StatusIndicator
-        status={status}
-        detectedLang={detectedLang}
-        errorMessage={errorMessage}
-      />
+      <StatusIndicator status={status} detectedLang={detectedLang} errorMessage={errorMessage} />
 
       {isOn && (
         <p className="text-xs text-gray-500">
@@ -183,10 +186,7 @@ export function MainView() {
               className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 font-medium text-blue-700"
               aria-label={`Source: YouTube CC ${ccSource.lang.toUpperCase()} ${ccSource.kind === 'asr' ? '(auto-generated)' : '(manual)'}`}
             >
-              <span aria-hidden="true">CC</span>
-              {' '}
-              {ccSource.lang.toUpperCase()}
-              {' '}
+              <span aria-hidden="true">CC</span> {ccSource.lang.toUpperCase()}{' '}
               {ccSource.kind === 'asr' ? '(auto)' : '(manual)'}
             </span>
           ) : (
@@ -207,12 +207,12 @@ export function MainView() {
           className="flex flex-col gap-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2"
           aria-label="Daily quota"
         >
-          {isPro ? (
+          {isPaid ? (
             <span
               className="inline-flex w-fit items-center rounded bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700"
-              aria-label="Pro — Unlimited"
+              aria-label={paidLabel}
             >
-              Pro — Unlimited
+              {paidLabel}
             </span>
           ) : (
             <>

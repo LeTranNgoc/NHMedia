@@ -61,6 +61,14 @@ async function main(): Promise<void> {
     seconds: env.FREE_TIER_LIMIT_SECONDS,
     translateChars: env.FREE_TIER_LIMIT_TRANSLATE_CHARS,
     ttsChars: env.FREE_TIER_LIMIT_TTS_CHARS,
+    starterSeconds: env.STARTER_TIER_MONTHLY_LIMIT_SECONDS,
+    standardSeconds: env.STANDARD_TIER_MONTHLY_LIMIT_SECONDS,
+    proSeconds: env.PRO_TIER_MONTHLY_LIMIT_SECONDS,
+    unlimitedSeconds: env.UNLIMITED_TIER_MONTHLY_LIMIT_SECONDS,
+    productIdStarter: env.POLAR_PRODUCT_ID_STARTER,
+    productIdStandard: env.POLAR_PRODUCT_ID_STANDARD,
+    productIdPro: env.POLAR_PRODUCT_ID_PRO,
+    productIdUnlimited: env.POLAR_PRODUCT_ID_UNLIMITED,
   });
 
   const app = await buildApp({ db, env, overrides: { usageTracker } });

@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { BillingMeResponse, UsageSummary } from '@translate-voice/shared';
-import { getBillingMe, getUsageHistory } from '../../shared/billing-api-client';
+import type { BillingMeResponse, Tier, UsageSummary } from '@translate-voice/shared';
+import {
+  getBillingMe,
+  getUsageHistory,
+  startCheckout,
+  cancelSubscription,
+} from '../../shared/billing-api-client';
 import {
   signInWithGoogle,
   requestMagicLink,
@@ -10,12 +15,32 @@ import {
 } from '../../shared/auth-client';
 import { PlanBadge } from '../components/plan-badge';
 import { UsageMeter } from '../components/usage-meter';
-import { UpgradeButton } from '../components/upgrade-button';
 
 type LoadState = 'loading' | 'loaded' | 'error' | 'unauthenticated';
 type SignInStep = 'idle' | 'email-form' | 'link-sent' | 'google-pending';
 
-const POLAR_CUSTOMER_PORTAL_URL = 'https://polar.sh/settings';
+// ── Tier display metadata ────────────────────────────────────────────────────
+
+type PaidTier = Exclude<Tier, 'free'>;
+
+interface TierMeta {
+  tier: PaidTier;
+  displayName: string;
+  price: string;
+  /** limit in seconds — used to compute "X giờ/tháng" display */
+  limitSeconds: number;
+}
+
+const PAID_TIERS: TierMeta[] = [
+  { tier: 'starter', displayName: 'Starter', price: '$4.99/tháng', limitSeconds: 5 * 3600 },
+  { tier: 'standard', displayName: 'Standard', price: '$9.99/tháng', limitSeconds: 15 * 3600 },
+  { tier: 'pro', displayName: 'Pro', price: '$19.99/tháng', limitSeconds: 40 * 3600 },
+  { tier: 'unlimited', displayName: 'Unlimited', price: '$39.99/tháng', limitSeconds: 200 * 3600 },
+];
+
+function capDisplay(limitSeconds: number): string {
+  return `${Math.round(limitSeconds / 3600)} giờ/tháng`;
+}
 
 /**
  * AccountView — shows plan + usage when authenticated, sign-in card when not.
@@ -27,7 +52,11 @@ export function AccountView() {
   const [history, setHistory] = useState<UsageSummary[]>([]);
   const [quotaExceeded, setQuotaExceeded] = useState(false);
 
-  // ── Sign-in state ────────────────────────────────────────────────────────
+  // ── Cancel subscription state ────────────────────────────────────────────
+  const [cancelLoading, setCancelLoading] = useState(false);
+  const [cancelFeedback, setCancelFeedback] = useState<string | null>(null);
+
+  // ── Sign-in state ────────────────────────────────────────────────────────────
   const [signInStep, setSignInStep] = useState<SignInStep>('idle');
   const [email, setEmail] = useState('');
   const [sentEmail, setSentEmail] = useState('');
@@ -70,7 +99,7 @@ export function AccountView() {
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, [load]);
 
-  // ── Sign-in handlers ─────────────────────────────────────────────────────
+  // ── Sign-in handlers ─────────────────────────────────────────────────────────
 
   const handleGoogleSignIn = async () => {
     setSignInError(null);
@@ -143,6 +172,40 @@ export function AccountView() {
     setLoadState('unauthenticated');
   };
 
+  // ── Cancel subscription handler ──────────────────────────────────────────────
+  const handleCancel = async () => {
+    if (!window.confirm('Bạn có chắc muốn hủy gói?')) return;
+    setCancelLoading(true);
+    setCancelFeedback(null);
+    try {
+      await cancelSubscription();
+      setCancelFeedback('Đã hủy. Bạn vẫn dùng được đến cuối kỳ.');
+      await load();
+    } catch (err) {
+      setCancelFeedback(
+        `Hủy thất bại: ${err instanceof Error ? err.message : 'Lỗi không xác định'}`,
+      );
+    } finally {
+      setCancelLoading(false);
+    }
+  };
+
+  // ── Checkout handler ─────────────────────────────────────────────────────────
+  const [checkoutLoading, setCheckoutLoading] = useState<PaidTier | null>(null);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+
+  const handleCheckout = async (tier: PaidTier) => {
+    setCheckoutLoading(tier);
+    setCheckoutError(null);
+    try {
+      await startCheckout(tier);
+    } catch (err) {
+      setCheckoutError(err instanceof Error ? err.message : 'Không thể mở trang thanh toán.');
+    } finally {
+      setCheckoutLoading(null);
+    }
+  };
+
   // Tear down any open SSE on unmount (popup closed).
   useEffect(
     () => () => {
@@ -151,7 +214,7 @@ export function AccountView() {
     [],
   );
 
-  // ── Loading ──────────────────────────────────────────────────────────────
+  // ── Loading ──────────────────────────────────────────────────────────────────
   if (loadState === 'loading') {
     return (
       <div className="flex flex-col gap-4 p-4" aria-busy="true" aria-label="Đang tải">
@@ -162,7 +225,7 @@ export function AccountView() {
     );
   }
 
-  // ── Unauthenticated — sign-in card ───────────────────────────────────────
+  // ── Unauthenticated — sign-in card ───────────────────────────────────────────
   if (loadState === 'unauthenticated') {
     return (
       <div className="flex flex-col gap-3 p-4">
@@ -174,7 +237,7 @@ export function AccountView() {
           </p>
         )}
 
-        {/* ── Google button ─────────────────────────────────────────────── */}
+        {/* ── Google button ──────────────────────────────────────────────── */}
         {signInStep !== 'email-form' && signInStep !== 'link-sent' && (
           <button
             type="button"
@@ -192,7 +255,7 @@ export function AccountView() {
           </button>
         )}
 
-        {/* ── Email / magic-link flow ───────────────────────────────────── */}
+        {/* ── Email / magic-link flow ────────────────────────────────────── */}
         {signInStep === 'idle' && (
           <button
             type="button"
@@ -300,7 +363,7 @@ export function AccountView() {
     );
   }
 
-  // ── Error ────────────────────────────────────────────────────────────────
+  // ── Error ────────────────────────────────────────────────────────────────────
   if (loadState === 'error' || billing === null) {
     return (
       <div className="flex flex-col gap-4 p-4">
@@ -318,58 +381,141 @@ export function AccountView() {
     );
   }
 
-  const { tier, usageToday } = billing;
-  const isPro = tier === 'pro';
+  const { tier, usageToday, customerPortalUrl } = billing;
+  const isPaid = tier !== 'free';
 
-  // ── Authenticated ────────────────────────────────────────────────────────
+  // ── Authenticated ────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-4 p-4">
-      {/* ── Quota exceeded banner ──────────────────────────────────────── */}
+      {/* ── Quota exceeded banner ───────────────────────────────────────── */}
       {quotaExceeded && (
         <div
           role="alert"
           className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"
         >
-          Đã hết quota miễn phí hôm nay. Nâng cấp Pro để dùng không giới hạn.
+          Đã hết quota hôm nay. Chọn gói trả phí để tăng giới hạn.
         </div>
       )}
 
-      {/* ── Plan header ───────────────────────────────────────────────── */}
+      {/* ── Plan header ─────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700">Gói hiện tại</span>
         <PlanBadge tier={tier} />
       </div>
 
-      {/* ── Usage meter ───────────────────────────────────────────────── */}
+      {/* ── Usage meter ─────────────────────────────────────────────────── */}
       <UsageMeter
         secondsCaptured={usageToday.secondsCaptured}
         limitSeconds={usageToday.limitSeconds}
       />
 
-      {/* ── Pro badge / Upgrade ───────────────────────────────────────── */}
-      {isPro ? (
+      {/* ── Paid tier actions ────────────────────────────────────────────── */}
+      {isPaid ? (
         <div className="flex flex-col gap-2">
           <div
             className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800"
-            aria-label="Trạng thái gói Pro"
+            aria-label={`Trạng thái gói ${tier}`}
           >
-            <span className="font-semibold">Pro</span>
+            <span className="font-semibold capitalize">{tier}</span>
             <span className="text-green-600">— đang hoạt động</span>
           </div>
+
           <a
-            href={POLAR_CUSTOMER_PORTAL_URL}
+            href={customerPortalUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="flex min-h-[44px] items-center justify-center rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
           >
             Quản lý subscription
           </a>
+
+          <button
+            type="button"
+            onClick={() => void handleCancel()}
+            disabled={cancelLoading}
+            aria-busy={cancelLoading}
+            className="flex min-h-[44px] w-full items-center justify-center rounded-md border border-red-200 px-4 py-2 text-sm text-red-600 hover:bg-red-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 disabled:opacity-60"
+          >
+            {cancelLoading ? 'Đang hủy…' : 'Hủy gói'}
+          </button>
+
+          {cancelFeedback && (
+            <p
+              role="status"
+              className={[
+                'rounded-md px-3 py-2 text-xs',
+                cancelFeedback.startsWith('Đã hủy')
+                  ? 'bg-green-50 text-green-700'
+                  : 'bg-red-50 text-red-600',
+              ].join(' ')}
+            >
+              {cancelFeedback}
+            </p>
+          )}
         </div>
       ) : (
-        <UpgradeButton />
+        /* ── Free tier — plan cards ──────────────────────────────────────── */
+        <div className="flex flex-col gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+            Nâng cấp gói
+          </p>
+
+          {checkoutError && (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600" role="alert">
+              {checkoutError}
+            </p>
+          )}
+
+          {PAID_TIERS.map((meta) => (
+            <div
+              key={meta.tier}
+              className="flex items-center justify-between rounded-md border border-gray-200 px-3 py-2"
+            >
+              <div className="flex flex-col">
+                <span className="text-sm font-semibold text-gray-800">{meta.displayName}</span>
+                <span className="text-xs text-gray-500">
+                  {meta.price} · {capDisplay(meta.limitSeconds)}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleCheckout(meta.tier)}
+                disabled={checkoutLoading !== null}
+                aria-busy={checkoutLoading === meta.tier}
+                aria-label={`Chọn gói ${meta.displayName}`}
+                className="ml-3 flex min-h-[36px] shrink-0 items-center justify-center rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 disabled:opacity-60"
+              >
+                {checkoutLoading === meta.tier ? (
+                  <svg
+                    aria-hidden="true"
+                    className="h-3.5 w-3.5 animate-spin"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                    />
+                  </svg>
+                ) : (
+                  'Chọn gói'
+                )}
+              </button>
+            </div>
+          ))}
+        </div>
       )}
 
-      {/* ── 7-day usage history ───────────────────────────────────────── */}
+      {/* ── 7-day usage history ──────────────────────────────────────────── */}
       {history.length > 0 && (
         <section aria-label="Lịch sử usage 7 ngày">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
@@ -395,7 +541,7 @@ export function AccountView() {
         </section>
       )}
 
-      {/* ── Sign out ──────────────────────────────────────────────────── */}
+      {/* ── Sign out ─────────────────────────────────────────────────────── */}
       <button
         type="button"
         onClick={() => void handleSignOut()}

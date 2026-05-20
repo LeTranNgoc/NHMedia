@@ -6,11 +6,12 @@ import { buildAuthGuard } from '../middleware/auth-guard.js';
 import type { JwtService } from '../auth/jwt-service.js';
 import { UsageTracker, utcDateString } from '../lib/usage-tracker.js';
 import { PolarClient } from '../billing/polar-client.js';
+import { SubscriptionService } from '../billing/subscription-service.js';
 import { WebhookHandler, verifyWebhookSignature } from '../billing/webhook-handler.js';
 import { usageLogCollection } from '../db/models/usage-log.js';
 
 const checkoutBodySchema = z.object({
-  tier: z.literal('pro'),
+  tier: z.enum(['starter', 'standard', 'pro', 'unlimited']),
 });
 
 export interface BillingRoutesOptions {
@@ -19,14 +20,40 @@ export interface BillingRoutesOptions {
   usageTracker: UsageTracker;
   polarClient: PolarClient;
   webhookSecret: string;
+  /** Polar customer portal URL. Defaults to https://polar.sh/dashboard */
+  customerPortalUrl?: string;
+  /** Product ID lookup table for the 4 paid tiers */
+  productIdStarter?: string;
+  productIdStandard?: string;
+  productIdPro?: string;
+  productIdUnlimited?: string;
 }
 
 export async function billingRoutes(
   app: FastifyInstance,
   opts: BillingRoutesOptions,
 ): Promise<void> {
-  const { db, jwtService, usageTracker, polarClient, webhookSecret } = opts;
+  const {
+    db,
+    jwtService,
+    usageTracker,
+    polarClient,
+    webhookSecret,
+    customerPortalUrl = 'https://polar.sh/dashboard',
+    productIdStarter = '',
+    productIdStandard = '',
+    productIdPro = '',
+    productIdUnlimited = '',
+  } = opts;
   const authGuard = buildAuthGuard(jwtService);
+
+  /** Map tier name → Polar product ID */
+  const tierProductIdMap: Record<string, string> = {
+    starter: productIdStarter,
+    standard: productIdStandard,
+    pro: productIdPro,
+    unlimited: productIdUnlimited,
+  };
 
   // ── GET /billing/me ─────────────────────────────────────────────────────────
   app.get(
@@ -46,6 +73,7 @@ export async function billingRoutes(
 
       return reply.status(200).send({
         tier,
+        customerPortalUrl,
         usageToday: {
           secondsCaptured: usage.seconds,
           limitSeconds: limits.seconds,
@@ -104,15 +132,59 @@ export async function billingRoutes(
       }
 
       const { userId, email } = request.user!;
+      const { tier } = parsed.data;
+
+      const resolvedProductId = tierProductIdMap[tier];
+      if (!resolvedProductId) {
+        return reply.status(503).send({
+          code: 'PRODUCT_NOT_CONFIGURED',
+          message: `Product ID for tier '${tier}' is not configured`,
+        });
+      }
 
       try {
         const result = await polarClient.createCheckoutSession({
           userId,
           customerEmail: email,
+          productId: resolvedProductId,
         });
         return reply.status(200).send({ url: result.url });
       } catch (err) {
         app.log.error({ err }, 'Polar checkout failed');
+        return reply.status(503).send({
+          code: 'BILLING_UNAVAILABLE',
+          message: 'Billing service temporarily unavailable — please try again later',
+        });
+      }
+    },
+  );
+
+  // ── POST /billing/cancel ─────────────────────────────────────────────────────
+  app.post(
+    '/cancel',
+    { preHandler: authGuard },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const userId = request.user!.userId;
+      const subscriptionService = new SubscriptionService(db);
+      const sub = await subscriptionService.findByUserId(new ObjectId(userId));
+
+      if (!sub) {
+        return reply
+          .status(404)
+          .send({ code: 'NO_SUBSCRIPTION', message: 'No active subscription found' });
+      }
+
+      // Already canceled — idempotent 200
+      if (sub.status === 'canceled') {
+        return reply.status(200).send({ status: 'canceled' });
+      }
+
+      try {
+        await polarClient.cancelSubscription(sub.polarSubscriptionId);
+        // Persistence is handled by webhook (subscription_canceled event) — do not update DB here
+        return reply.status(200).send({ status: 'canceled' });
+      } catch (err) {
+        app.log.error({ err }, 'Polar cancel subscription failed');
         return reply.status(503).send({
           code: 'BILLING_UNAVAILABLE',
           message: 'Billing service temporarily unavailable — please try again later',
@@ -135,7 +207,9 @@ export async function billingRoutes(
 
     const valid = verifyWebhookSignature(rawBody, signatureHeader, webhookSecret);
     if (!valid) {
-      return reply.status(401).send({ code: 'INVALID_SIGNATURE', message: 'Invalid webhook signature' });
+      return reply
+        .status(401)
+        .send({ code: 'INVALID_SIGNATURE', message: 'Invalid webhook signature' });
     }
 
     let event: unknown;
@@ -149,6 +223,12 @@ export async function billingRoutes(
       webhookSecret,
       db,
       resolveUserId: (id) => new ObjectId(id),
+      productIds: {
+        productIdStarter,
+        productIdStandard,
+        productIdPro,
+        productIdUnlimited,
+      },
     });
 
     // Never log payload verbatim — may contain customer email
@@ -156,7 +236,10 @@ export async function billingRoutes(
       const result = await handler.handle(event as Parameters<typeof handler.handle>[0]);
       return reply.status(200).send({ status: result.status });
     } catch (err) {
-      app.log.error({ err: err instanceof Error ? err.message : 'unknown' }, 'webhook handler error');
+      app.log.error(
+        { err: err instanceof Error ? err.message : 'unknown' },
+        'webhook handler error',
+      );
       return reply.status(500).send({ code: 'HANDLER_ERROR', message: 'Internal error' });
     }
   });

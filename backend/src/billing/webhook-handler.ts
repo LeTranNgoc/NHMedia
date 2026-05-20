@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Db, ObjectId } from 'mongodb';
 import { SubscriptionService } from './subscription-service.js';
+import { resolveProductIdToTier, type TierProductIds } from './tier-resolver.js';
 
 export interface WebhookEvent {
   id?: string;
@@ -22,6 +23,8 @@ export interface WebhookHandlerOptions {
   db: Db;
   /** Injected for tests — resolves userId from metadata.userId string */
   resolveUserId: (userIdStr: string) => ObjectId;
+  /** 4 paid-tier Polar product IDs from env. Must match UsageTracker config. */
+  productIds: TierProductIds;
 }
 
 /**
@@ -41,9 +44,7 @@ export function verifyWebhookSignature(
   if (!signatureHeader) return false;
 
   // Polar may send "sha256=<hex>" or plain "<hex>"
-  const hexSig = signatureHeader.startsWith('sha256=')
-    ? signatureHeader.slice(7)
-    : signatureHeader;
+  const hexSig = signatureHeader.startsWith('sha256=') ? signatureHeader.slice(7) : signatureHeader;
 
   const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
 
@@ -151,16 +152,23 @@ export class WebhookHandler {
     const startedAt = data.started_at ? new Date(data.started_at) : new Date();
     const endsAt = data.current_period_end ? new Date(data.current_period_end) : null;
     const status = this.normalizeStatus(data.status ?? 'active');
+    const polarProductId = data.product_id;
+    const tier = polarProductId
+      ? resolveProductIdToTier(polarProductId, this.opts.productIds)
+      : 'pro';
 
     await this.subscriptionService.upsert({
       userId,
       polarSubscriptionId: data.id,
-      tier: 'pro',
+      tier,
+      polarProductId,
       status,
       startedAt,
       endsAt,
     });
-    console.info(`[webhook] Pro subscription activated — userId=${userIdStr} sub=${data.id}`);
+    console.info(
+      `[webhook] subscription activated — userId=${userIdStr} sub=${data.id} tier=${tier} product=${polarProductId ?? '<none>'}`,
+    );
   }
 
   private async handleUpdated(event: WebhookEvent): Promise<void> {
@@ -177,11 +185,18 @@ export class WebhookHandler {
 
     const endsAt = data.current_period_end ? new Date(data.current_period_end) : existing.endsAt;
     const status = this.normalizeStatus(data.status ?? existing.status);
+    // Prefer the freshly-arrived product_id (handles tier upgrades like Starter→Pro).
+    // Fall back to the previously-persisted polarProductId.
+    const polarProductId = data.product_id ?? existing.polarProductId;
+    const tier = polarProductId
+      ? resolveProductIdToTier(polarProductId, this.opts.productIds)
+      : (existing.tier ?? 'pro');
 
     await this.subscriptionService.upsert({
       userId: existing.userId,
       polarSubscriptionId: data.id,
-      tier: 'pro',
+      tier,
+      polarProductId,
       status,
       startedAt: existing.startedAt,
       endsAt,
@@ -198,15 +213,22 @@ export class WebhookHandler {
       // Out-of-order: create with canceled status so we have a record
       const userIdStr = data.metadata?.['userId'] as string | undefined;
       if (!userIdStr) {
-        console.warn('[webhook] subscription.canceled missing metadata.userId and no existing — skipping');
+        console.warn(
+          '[webhook] subscription.canceled missing metadata.userId and no existing — skipping',
+        );
         return;
       }
       const userId = this.opts.resolveUserId(userIdStr);
       const endsAt = data.current_period_end ? new Date(data.current_period_end) : null;
+      const polarProductId = data.product_id;
+      const tier = polarProductId
+        ? resolveProductIdToTier(polarProductId, this.opts.productIds)
+        : 'pro';
       await this.subscriptionService.upsert({
         userId,
         polarSubscriptionId: data.id,
-        tier: 'pro',
+        tier,
+        polarProductId,
         status: 'canceled',
         startedAt: new Date(),
         endsAt,
@@ -214,15 +236,19 @@ export class WebhookHandler {
       return;
     }
 
-    // endsAt = current_period_end (user keeps Pro access until billing period ends)
-    const endsAt = data.current_period_end
-      ? new Date(data.current_period_end)
-      : existing.endsAt;
+    // endsAt = current_period_end (user keeps paid access until billing period ends)
+    const endsAt = data.current_period_end ? new Date(data.current_period_end) : existing.endsAt;
+    // Preserve existing tier on cancel — don't re-resolve unless event carries product_id
+    const polarProductId = data.product_id ?? existing.polarProductId;
+    const tier = polarProductId
+      ? resolveProductIdToTier(polarProductId, this.opts.productIds)
+      : (existing.tier ?? 'pro');
 
     await this.subscriptionService.upsert({
       userId: existing.userId,
       polarSubscriptionId: data.id,
-      tier: 'pro',
+      tier,
+      polarProductId,
       status: 'canceled',
       startedAt: existing.startedAt,
       endsAt,

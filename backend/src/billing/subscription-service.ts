@@ -2,6 +2,7 @@ import type { Db, ObjectId } from 'mongodb';
 import {
   subscriptionCollection,
   type Subscription,
+  type SubscriptionTier,
 } from '../db/models/subscription.js';
 
 export class SubscriptionService {
@@ -15,7 +16,8 @@ export class SubscriptionService {
   async upsert(params: {
     userId: ObjectId;
     polarSubscriptionId: string;
-    tier: 'pro';
+    tier: SubscriptionTier;
+    polarProductId?: string;
     status: 'active' | 'canceled' | 'expired';
     startedAt: Date;
     endsAt: Date | null;
@@ -26,18 +28,23 @@ export class SubscriptionService {
     // $set updates mutable fields on both insert and update.
     // $setOnInsert sets immutable fields only on initial insert.
     // Fields must NOT overlap between $set and $setOnInsert — MongoDB rejects that.
+    //
+    // `tier` is in $set (not $setOnInsert) so a Starter→Pro upgrade webhook
+    // updates the existing row. Treating tier as an advisory cache; the
+    // authoritative source is polarProductId (resolved on read).
     await col.updateOne(
       { polarSubscriptionId: params.polarSubscriptionId },
       {
         $set: {
+          tier: params.tier,
           status: params.status,
           endsAt: params.endsAt,
           updatedAt: now,
+          ...(params.polarProductId !== undefined ? { polarProductId: params.polarProductId } : {}),
         },
         $setOnInsert: {
           userId: params.userId,
           polarSubscriptionId: params.polarSubscriptionId,
-          tier: params.tier,
           startedAt: params.startedAt,
           createdAt: now,
         },

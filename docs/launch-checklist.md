@@ -131,9 +131,16 @@ fly secrets set `
   AZURE_SPEECH_REGION="southeastasia" `
   POLAR_API_KEY="polar_xxx" `
   POLAR_WEBHOOK_SECRET="whsec_xxx" `
+  POLAR_PRODUCT_ID_STARTER="prod_xxx" `
+  POLAR_PRODUCT_ID_STANDARD="prod_xxx" `
   POLAR_PRODUCT_ID_PRO="prod_xxx" `
-  POLAR_PRO_CHECKOUT_URL="https://buy.polar.sh/<slug>" `
+  POLAR_PRODUCT_ID_UNLIMITED="prod_xxx" `
+  POLAR_CUSTOMER_PORTAL_URL="https://polar.sh/settings" `
   POLAR_SERVER="sandbox" `
+  STARTER_TIER_MONTHLY_LIMIT_SECONDS=18000 `
+  STANDARD_TIER_MONTHLY_LIMIT_SECONDS=54000 `
+  PRO_TIER_MONTHLY_LIMIT_SECONDS=144000 `
+  UNLIMITED_TIER_MONTHLY_LIMIT_SECONDS=720000 `
   FREE_TIER_LIMIT_SECONDS=900 `
   FREE_TIER_LIMIT_TRANSLATE_CHARS=50000 `
   FREE_TIER_LIMIT_TTS_CHARS=50000 `
@@ -220,15 +227,22 @@ Phải thấy Pino logs tới Logtail (dashboard → Sources → live tail).
 - Đăng ký bằng GitHub.
 - **Create organization** → name `translate-voice` (hoặc bất kỳ).
 
-### 5.3. Tạo Pro product
+### 5.3. Tạo 4 paid products
 
-- Dashboard → **Products** → **Create product**:
-  - Name: `Pro`
-  - Type: **Subscription**
-  - Price: $5 USD / month
-  - Description: "Unlimited dubbing, priority pipeline"
-- Sau khi tạo → click vào product → **Checkout Links** → **Create checkout link** → copy URL (dạng `https://sandbox.polar.sh/<org>/<product>`). Đây là `POLAR_PRO_CHECKOUT_URL`.
-- **Product ID** hiện trên trang product detail (dạng `prod_xxx`). Lưu cho `POLAR_PRODUCT_ID_PRO`.
+Dashboard → **Products** → **Create product**. Repeat 4 lần cho 4 tier:
+
+| Tier      | Name        | Price        | Description               | Env key (product ID)         |
+| --------- | ----------- | ------------ | ------------------------- | ---------------------------- |
+| Starter   | `Starter`   | $4.99/month  | "5 hours/month dubbing"   | `POLAR_PRODUCT_ID_STARTER`   |
+| Standard  | `Standard`  | $9.99/month  | "15 hours/month dubbing"  | `POLAR_PRODUCT_ID_STANDARD`  |
+| Pro       | `Pro`       | $19.99/month | "40 hours/month dubbing"  | `POLAR_PRODUCT_ID_PRO`       |
+| Unlimited | `Unlimited` | $39.99/month | "200 hours/month dubbing" | `POLAR_PRODUCT_ID_UNLIMITED` |
+
+Cho mỗi product:
+
+- Type: **Subscription**
+- Sau khi tạo → click product → **Product ID** ở header (dạng `prod_xxx`). Lưu vào env key tương ứng.
+- Không cần Checkout Link riêng — backend dùng SDK `createCheckoutSession(productId)` resolve qua product ID.
 
 ### 5.4. API token
 
@@ -248,8 +262,10 @@ Phải thấy Pino logs tới Logtail (dashboard → Sources → live tail).
 ```powershell
 fly secrets set `
   POLAR_API_KEY="polar_oat_xxx" `
+  POLAR_PRODUCT_ID_STARTER="prod_xxx" `
+  POLAR_PRODUCT_ID_STANDARD="prod_xxx" `
   POLAR_PRODUCT_ID_PRO="prod_xxx" `
-  POLAR_PRO_CHECKOUT_URL="https://sandbox.polar.sh/<org>/<product>" `
+  POLAR_PRODUCT_ID_UNLIMITED="prod_xxx" `
   POLAR_WEBHOOK_SECRET="whsec_xxx" `
   POLAR_SERVER="sandbox"
 ```
@@ -268,9 +284,9 @@ Theo `docs/deployment-guide.md §7.4` — 9-step E2E. Tóm tắt:
 4. Pay với Polar test card: số `4242 4242 4242 4242`, expiry bất kỳ tương lai, CVC `123`.
 5. Theo dõi `fly logs` → phải thấy `[polar-webhook] Pro subscription activated for user ...`.
 6. Mongo Atlas → cluster → **Collections** → `subscriptions` → tìm document với `userId=<your-id>`, `status='active'`, `tier='pro'`.
-7. Reload popup → tier badge "Pro" + "Unlimited" quota.
-8. Re-fetch `/billing/me` → `{ tier: 'pro', limits: { seconds: null, ... } }`.
-9. **Cancel test:** Polar sandbox dashboard → cancel subscription → log phải thấy `subscription.canceled` event.
+7. Reload popup → tier badge match tier purchased (vd: "Standard — 15h/tháng"), quota bar disappears, cancel button shown.
+8. Re-fetch `/billing/me` → `{ tier: '<purchased_tier>', limits: { seconds: <tier_monthly_cap>, ... }, customerPortalUrl: '...' }`.
+9. **Cancel test:** Polar sandbox dashboard cancel OR click "Hủy gói" in popup → backend `POST /billing/cancel` 200 → log thấy `subscription.canceled` webhook event.
 
 **Pass criteria:** tất cả 9 step xong, không có error trong Fly logs hoặc Sentry.
 
@@ -432,8 +448,10 @@ Trước khi mời user trả tiền:
    ```powershell
    fly secrets set `
      POLAR_API_KEY="polar_oat_<live>" `
+     POLAR_PRODUCT_ID_STARTER="prod_<live>" `
+     POLAR_PRODUCT_ID_STANDARD="prod_<live>" `
      POLAR_PRODUCT_ID_PRO="prod_<live>" `
-     POLAR_PRO_CHECKOUT_URL="https://buy.polar.sh/<live-slug>" `
+     POLAR_PRODUCT_ID_UNLIMITED="prod_<live>" `
      POLAR_WEBHOOK_SECRET="whsec_<live>" `
      POLAR_SERVER="production"
    ```
@@ -448,7 +466,7 @@ Trước khi mời user trả tiền:
 
   Cài extension tại: <chrome-web-store-url>
   Đăng nhập bằng Google hoặc email magic-link.
-  Free 15 phút/ngày dubbing, Pro $5/tháng unlimited.
+  Miễn phí 15 phút/ngày. Paid tiers: Starter $4.99 (5h/tháng) / Standard $9.99 (15h) / Pro $19.99 (40h) / Unlimited $39.99 (200h).
 
   Feedback: <github-issues-url>
   ```

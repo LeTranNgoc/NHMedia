@@ -41,8 +41,16 @@ export interface AppEnv {
   POLAR_API_KEY?: string;
   POLAR_WEBHOOK_SECRET?: string;
   POLAR_PRODUCT_ID_PRO?: string;
+  POLAR_PRODUCT_ID_STARTER?: string;
+  POLAR_PRODUCT_ID_STANDARD?: string;
+  POLAR_PRODUCT_ID_UNLIMITED?: string;
   POLAR_PRO_CHECKOUT_URL?: string;
+  POLAR_CUSTOMER_PORTAL_URL?: string;
   POLAR_SERVER?: 'sandbox' | 'production';
+  STARTER_TIER_MONTHLY_LIMIT_SECONDS?: number;
+  STANDARD_TIER_MONTHLY_LIMIT_SECONDS?: number;
+  PRO_TIER_MONTHLY_LIMIT_SECONDS?: number;
+  UNLIMITED_TIER_MONTHLY_LIMIT_SECONDS?: number;
   FREE_TIER_LIMIT_SECONDS?: number;
   FREE_TIER_LIMIT_TRANSLATE_CHARS?: number;
   FREE_TIER_LIMIT_TTS_CHARS?: number;
@@ -148,6 +156,14 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
       seconds: env.FREE_TIER_LIMIT_SECONDS,
       translateChars: env.FREE_TIER_LIMIT_TRANSLATE_CHARS,
       ttsChars: env.FREE_TIER_LIMIT_TTS_CHARS,
+      starterSeconds: env.STARTER_TIER_MONTHLY_LIMIT_SECONDS,
+      standardSeconds: env.STANDARD_TIER_MONTHLY_LIMIT_SECONDS,
+      proSeconds: env.PRO_TIER_MONTHLY_LIMIT_SECONDS,
+      unlimitedSeconds: env.UNLIMITED_TIER_MONTHLY_LIMIT_SECONDS,
+      productIdStarter: env.POLAR_PRODUCT_ID_STARTER,
+      productIdStandard: env.POLAR_PRODUCT_ID_STANDARD,
+      productIdPro: env.POLAR_PRODUCT_ID_PRO,
+      productIdUnlimited: env.POLAR_PRODUCT_ID_UNLIMITED,
     });
 
   const polarClient =
@@ -194,6 +210,11 @@ export async function buildApp({ db, env, overrides }: BuildAppOptions) {
     usageTracker,
     polarClient,
     webhookSecret: env.POLAR_WEBHOOK_SECRET ?? 'placeholder',
+    customerPortalUrl: env.POLAR_CUSTOMER_PORTAL_URL ?? 'https://polar.sh/dashboard',
+    productIdStarter: env.POLAR_PRODUCT_ID_STARTER ?? '',
+    productIdStandard: env.POLAR_PRODUCT_ID_STANDARD ?? '',
+    productIdPro: env.POLAR_PRODUCT_ID_PRO ?? '',
+    productIdUnlimited: env.POLAR_PRODUCT_ID_UNLIMITED ?? '',
   });
 
   // ── WebSocket relay ────────────────────────────────────────────────────────

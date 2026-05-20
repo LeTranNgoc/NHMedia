@@ -1,6 +1,6 @@
 // ── Billing tier ─────────────────────────────────────────────────────────────
 
-export type Tier = 'free' | 'pro';
+export type Tier = 'free' | 'starter' | 'standard' | 'pro' | 'unlimited';
 
 // ── Subscription status ───────────────────────────────────────────────────────
 
@@ -29,6 +29,8 @@ export interface UsageTotalsResponse {
 
 export interface BillingMeResponse {
   tier: Tier;
+  /** Polar customer portal URL returned by the backend. Use instead of any hardcoded URL. */
+  customerPortalUrl: string;
   usageToday: {
     /** @deprecated use limits.seconds instead */
     secondsCaptured: number;
@@ -53,7 +55,7 @@ export interface CheckoutResponse {
 export interface SubscriptionRecord {
   userId: string;
   polarSubscriptionId: string;
-  tier: 'pro';
+  tier: Tier;
   status: SubscriptionStatus;
   startedAt: string;
   endsAt: string | null;

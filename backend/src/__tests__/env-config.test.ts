@@ -15,7 +15,10 @@ const PROD_SECRETS = {
   GEMINI_API_KEY: 'gemini_real_key',
   POLAR_API_KEY: 'polar_real_key',
   POLAR_WEBHOOK_SECRET: 'a'.repeat(32),
-  POLAR_PRODUCT_ID_PRO: 'prod_real_123',
+  POLAR_PRODUCT_ID_PRO: 'prod_real_pro',
+  POLAR_PRODUCT_ID_STARTER: 'prod_real_starter',
+  POLAR_PRODUCT_ID_STANDARD: 'prod_real_standard',
+  POLAR_PRODUCT_ID_UNLIMITED: 'prod_real_unlimited',
 };
 
 describe('loadEnv — development', () => {

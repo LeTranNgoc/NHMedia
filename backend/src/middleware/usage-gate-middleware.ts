@@ -1,63 +1,109 @@
-import type { UsageTracker, UsageKind } from '../lib/usage-tracker.js';
+import type { UsageTracker, UsageKind, Tier } from '../lib/usage-tracker.js';
 
 export interface UsageGateResult {
   allowed: boolean;
-  tier: 'free' | 'pro';
-  /** null = unlimited (pro); number = seconds/chars remaining for that kind */
+  tier: Tier;
+  /** null = unlimited; number = seconds remaining */
   secondsRemaining: number | null;
-  reason?: 'quota_exceeded';
+  reason?: 'quota_exceeded' | 'billing_unavailable';
   /** Which kinds have exceeded their cap. Populated when allowed=false. */
   kindExceeded?: UsageKind[];
 }
 
 /**
  * WS handshake gate — call BEFORE accepting the WebSocket connection.
- * Checks all three usage kinds (seconds, translateChars, ttsChars) independently.
- * Returns allowed=false with reason='quota_exceeded' + kindExceeded list if any cap is hit.
+ * Free tier: daily check via getToday (unchanged).
+ * Paid tiers: monthly check via getMonthSeconds.
+ * Returns allowed=false with reason='quota_exceeded' if cap is hit.
  *
- * Pro users always pass. secondsRemaining is null for pro (unlimited).
+ * Fail-closed on DB errors: if tracker.getTier or getMonthSeconds throws
+ * (Mongo blip etc.), deny the session with reason='billing_unavailable'.
+ * Silent fall-through to 'free' would lock out paid users; silent 0 for
+ * monthSeconds would let cap-exhausted users blow past their limit.
  */
 export async function checkUsageGate(
   userId: string,
   tracker: UsageTracker,
 ): Promise<UsageGateResult> {
-  const tier = await tracker.getTier(userId);
+  let tier: Tier;
+  try {
+    tier = await tracker.getTier(userId);
+  } catch (err) {
+    console.error(
+      `[usage-gate] getTier DB error for userId=${userId} — fail-closed:`,
+      err instanceof Error ? err.message : err,
+    );
+    return {
+      allowed: false,
+      tier: 'free',
+      secondsRemaining: 0,
+      reason: 'billing_unavailable',
+    };
+  }
   const limits = tracker.getLimit(tier);
 
-  // Pro — all limits are null → unlimited
-  if (limits.seconds === null && limits.translateChars === null && limits.ttsChars === null) {
+  if (tier === 'free') {
+    // Free tier: daily check (existing behavior)
+    const usage = await tracker.getToday(userId);
+    const exceeded: UsageKind[] = [];
+
+    if (limits.seconds !== null && usage.seconds >= limits.seconds) {
+      exceeded.push('seconds');
+    }
+    if (limits.translateChars !== null && usage.translateChars >= limits.translateChars) {
+      exceeded.push('translateChars');
+    }
+    if (limits.ttsChars !== null && usage.ttsChars >= limits.ttsChars) {
+      exceeded.push('ttsChars');
+    }
+
+    if (exceeded.length > 0) {
+      return {
+        allowed: false,
+        tier,
+        secondsRemaining: 0,
+        reason: 'quota_exceeded',
+        kindExceeded: exceeded,
+      };
+    }
+
+    const secondsRemaining = limits.seconds !== null ? limits.seconds - usage.seconds : null;
+    return { allowed: true, tier, secondsRemaining };
+  }
+
+  // Paid tiers: monthly check
+  const cap = limits.seconds;
+
+  // No cap → unlimited (legacy pro behavior preserved)
+  if (cap === null) {
     return { allowed: true, tier, secondsRemaining: null };
   }
 
-  const usage = await tracker.getToday(userId);
-
-  const exceeded: UsageKind[] = [];
-
-  if (limits.seconds !== null && usage.seconds >= limits.seconds) {
-    exceeded.push('seconds');
+  let monthSeconds: number;
+  try {
+    monthSeconds = await tracker.getMonthSeconds(userId);
+  } catch (err) {
+    console.error(
+      `[usage-gate] getMonthSeconds DB error for userId=${userId} — fail-closed:`,
+      err instanceof Error ? err.message : err,
+    );
+    return {
+      allowed: false,
+      tier,
+      secondsRemaining: 0,
+      reason: 'billing_unavailable',
+    };
   }
-  if (limits.translateChars !== null && usage.translateChars >= limits.translateChars) {
-    exceeded.push('translateChars');
-  }
-  if (limits.ttsChars !== null && usage.ttsChars >= limits.ttsChars) {
-    exceeded.push('ttsChars');
-  }
 
-  if (exceeded.length > 0) {
+  if (monthSeconds >= cap) {
     return {
       allowed: false,
       tier,
       secondsRemaining: 0,
       reason: 'quota_exceeded',
-      kindExceeded: exceeded,
+      kindExceeded: ['seconds'],
     };
   }
 
-  const secondsRemaining = limits.seconds !== null ? limits.seconds - usage.seconds : null;
-
-  return {
-    allowed: true,
-    tier,
-    secondsRemaining,
-  };
+  return { allowed: true, tier, secondsRemaining: cap - monthSeconds };
 }
