@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { BillingMeResponse, Tier, UsageSummary } from '@translate-voice/shared';
+import type { BillingMeResponse, PaidTier, UsageSummary } from '@translate-voice/shared';
+import { PAID_TIER_PRICING } from '@translate-voice/shared';
 import {
   getBillingMe,
   getUsageHistory,
@@ -21,22 +22,22 @@ type SignInStep = 'idle' | 'email-form' | 'link-sent' | 'google-pending';
 
 // ── Tier display metadata ────────────────────────────────────────────────────
 
-type PaidTier = Exclude<Tier, 'free'>;
-
-interface TierMeta {
+// Read from shared/src/billing-types.ts PAID_TIER_PRICING (single source of truth).
+// Backend env defaults must match — see env-pricing-consistency.test.ts.
+const PAID_TIERS: ReadonlyArray<{
   tier: PaidTier;
   displayName: string;
   price: string;
-  /** limit in seconds — used to compute "X giờ/tháng" display */
   limitSeconds: number;
-}
-
-const PAID_TIERS: TierMeta[] = [
-  { tier: 'starter', displayName: 'Starter', price: '$4.99/tháng', limitSeconds: 5 * 3600 },
-  { tier: 'standard', displayName: 'Standard', price: '$9.99/tháng', limitSeconds: 15 * 3600 },
-  { tier: 'pro', displayName: 'Pro', price: '$19.99/tháng', limitSeconds: 40 * 3600 },
-  { tier: 'unlimited', displayName: 'Unlimited', price: '$39.99/tháng', limitSeconds: 200 * 3600 },
-];
+}> = (['starter', 'standard', 'pro', 'unlimited'] satisfies PaidTier[]).map((t) => {
+  const meta = PAID_TIER_PRICING[t];
+  return {
+    tier: t,
+    displayName: meta.displayName,
+    price: `$${meta.priceUsd.toFixed(2)}/tháng`,
+    limitSeconds: meta.monthlySeconds,
+  };
+});
 
 function capDisplay(limitSeconds: number): string {
   return `${Math.round(limitSeconds / 3600)} giờ/tháng`;
@@ -173,6 +174,11 @@ export function AccountView() {
   };
 
   // ── Cancel subscription handler ──────────────────────────────────────────────
+  // 5-second cooldown after success guards against double-click races where the
+  // webhook hasn't yet persisted `status: 'canceled'` and the second POST would
+  // hit Polar's revoke API redundantly (Polar idempotency unverified).
+  const cancelCooldownTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [cancelOnCooldown, setCancelOnCooldown] = useState(false);
   const handleCancel = async () => {
     if (!window.confirm('Bạn có chắc muốn hủy gói?')) return;
     setCancelLoading(true);
@@ -180,6 +186,12 @@ export function AccountView() {
     try {
       await cancelSubscription();
       setCancelFeedback('Đã hủy. Bạn vẫn dùng được đến cuối kỳ.');
+      setCancelOnCooldown(true);
+      if (cancelCooldownTimer.current !== null) clearTimeout(cancelCooldownTimer.current);
+      cancelCooldownTimer.current = setTimeout(() => {
+        setCancelOnCooldown(false);
+        cancelCooldownTimer.current = null;
+      }, 5000);
       await load();
     } catch (err) {
       setCancelFeedback(
@@ -206,10 +218,11 @@ export function AccountView() {
     }
   };
 
-  // Tear down any open SSE on unmount (popup closed).
+  // Tear down any open SSE + cancel cooldown timer on unmount (popup closed).
   useEffect(
     () => () => {
       sseAbort.current?.abort();
+      if (cancelCooldownTimer.current !== null) clearTimeout(cancelCooldownTimer.current);
     },
     [],
   );
@@ -432,11 +445,11 @@ export function AccountView() {
           <button
             type="button"
             onClick={() => void handleCancel()}
-            disabled={cancelLoading}
+            disabled={cancelLoading || cancelOnCooldown}
             aria-busy={cancelLoading}
             className="flex min-h-[44px] w-full items-center justify-center rounded-md border border-red-200 px-4 py-2 text-sm text-red-600 hover:bg-red-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 disabled:opacity-60"
           >
-            {cancelLoading ? 'Đang hủy…' : 'Hủy gói'}
+            {cancelLoading ? 'Đang hủy…' : cancelOnCooldown ? 'Đã hủy' : 'Hủy gói'}
           </button>
 
           {cancelFeedback && (

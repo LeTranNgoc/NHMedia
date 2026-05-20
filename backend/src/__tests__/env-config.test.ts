@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { loadEnv } from '../config/env.js';
+import { PAID_TIER_PRICING } from '@translate-voice/shared';
 
 const BASE_ENV = {
   MONGO_URI: 'mongodb://localhost:27017',
@@ -135,4 +136,27 @@ describe('loadEnv — production fail-fast', () => {
       }),
     ).toThrow(/Production secrets/);
   });
+});
+
+// ── Cross-package consistency: env defaults vs shared PAID_TIER_PRICING ─────
+// FE plan picker + tier-badge formatter both read PAID_TIER_PRICING (shared
+// package). BE env defaults SHOULD mirror those values so the displayed cap
+// matches what the gate enforces. If a tier's seconds drift between the two,
+// the FE shows N giờ/tháng while gate enforces M giờ/tháng — UX vs reality
+// mismatch + support nightmare. This test pins them together.
+describe('env defaults match shared PAID_TIER_PRICING', () => {
+  it.each([
+    { tier: 'starter', envKey: 'STARTER_TIER_MONTHLY_LIMIT_SECONDS' },
+    { tier: 'standard', envKey: 'STANDARD_TIER_MONTHLY_LIMIT_SECONDS' },
+    { tier: 'pro', envKey: 'PRO_TIER_MONTHLY_LIMIT_SECONDS' },
+    { tier: 'unlimited', envKey: 'UNLIMITED_TIER_MONTHLY_LIMIT_SECONDS' },
+  ] as const)(
+    'env.$envKey default = PAID_TIER_PRICING.$tier.monthlySeconds',
+    ({ tier, envKey }) => {
+      const env = loadEnv({ ...BASE_ENV });
+      const envValue = env[envKey];
+      const sharedValue = PAID_TIER_PRICING[tier].monthlySeconds;
+      expect(envValue).toBe(sharedValue);
+    },
+  );
 });

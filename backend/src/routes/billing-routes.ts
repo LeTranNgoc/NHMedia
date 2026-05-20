@@ -184,7 +184,16 @@ export async function billingRoutes(
         // Persistence is handled by webhook (subscription_canceled event) — do not update DB here
         return reply.status(200).send({ status: 'canceled' });
       } catch (err) {
-        app.log.error({ err }, 'Polar cancel subscription failed');
+        // Polar SDK errors can embed request URL with `?api_key=...` query strings in
+        // the stack. Log only the safe surface (message + identifiers).
+        app.log.error(
+          {
+            err: err instanceof Error ? err.message : 'unknown',
+            userId,
+            polarSubId: sub.polarSubscriptionId,
+          },
+          'Polar cancel subscription failed',
+        );
         return reply.status(503).send({
           code: 'BILLING_UNAVAILABLE',
           message: 'Billing service temporarily unavailable — please try again later',

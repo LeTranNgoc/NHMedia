@@ -38,33 +38,29 @@ async function createIndexes(db: Db): Promise<void> {
   await db.collection('users').createIndex({ email: 1 }, { unique: true, background: true });
 
   // magic_link_tokens: lookup by hash + TTL
-  await db
-    .collection('magic_link_tokens')
-    .createIndex({ tokenHash: 1 }, { background: true });
+  await db.collection('magic_link_tokens').createIndex({ tokenHash: 1 }, { background: true });
   await db
     .collection('magic_link_tokens')
     .createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, background: true });
 
   // usage_log: compound (userId, date) + TTL 7 days
-  await db
-    .collection('usage_log')
-    .createIndex({ userId: 1, date: 1 }, { background: true });
+  await db.collection('usage_log').createIndex({ userId: 1, date: 1 }, { background: true });
   await db
     .collection('usage_log')
     .createIndex({ createdAt: 1 }, { expireAfterSeconds: 7 * 24 * 60 * 60, background: true });
 
-  // subscriptions: unique on polarSubscriptionId, lookup on userId
+  // subscriptions: unique on polarSubscriptionId, lookup on userId sorted by
+  // createdAt DESC. Compound index serves both "find subscription by userId" and
+  // "most-recent sub per user" queries (`findByUserId` sorts on createdAt).
   await db
     .collection('subscriptions')
     .createIndex({ polarSubscriptionId: 1 }, { unique: true, background: true });
   await db
     .collection('subscriptions')
-    .createIndex({ userId: 1 }, { background: true });
+    .createIndex({ userId: 1, createdAt: -1 }, { background: true });
 
   // webhook_events: unique dedup key + TTL 30 days
-  await db
-    .collection('webhook_events')
-    .createIndex({ key: 1 }, { unique: true, background: true });
+  await db.collection('webhook_events').createIndex({ key: 1 }, { unique: true, background: true });
   await db
     .collection('webhook_events')
     .createIndex({ processedAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60, background: true });
